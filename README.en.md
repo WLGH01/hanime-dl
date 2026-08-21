@@ -1,6 +1,6 @@
 # hanime1.me Batch Downloader
 
-> [中文 README](./README.md) · A Tampermonkey userscript for batch downloading videos from [hanime1.me](https://hanime1.me/). Supports aria2 RPC (HTTP/SOCKS proxy), per-author full download, custom rename rules with auto sub-directories, push throttling, and a persistent task queue that resumes across page navigation.
+> [中文 README](./README.md) · A Tampermonkey userscript for batch downloading videos from [hanime1.me](https://hanime1.me/). Supports aria2 RPC (HTTP/SOCKS proxy), per-author full download, custom rename rules with automatic sub-directories, push throttling, and a persistent task queue that resumes across page navigation.
 
 Userscript: `hanime1-batch-downloader.user.js` (v1.2.0)
 
@@ -27,7 +27,7 @@ Userscript: `hanime1-batch-downloader.user.js` (v1.2.0)
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/) in your browser.
 2. Tampermonkey → Dashboard → Utilities → *Import from file* and choose `hanime1-batch-downloader.user.js`; or create a new script and paste the full content.
-3. Open https://hanime1.me/ — a **red vertical rail labeled 下载工具** appears at the right edge of the screen when it works; hover it to open the panel.
+3. Open https://hanime1.me/ — a **red vertical rail labeled "Download Tool" (下载工具)** appears at the right edge of the screen when it works; hover it to open the panel.
 
 ---
 
@@ -41,14 +41,14 @@ The script only parses videos and pushes download tasks; the actual downloading 
 aria2c --enable-rpc --rpc-listen-all=false --rpc-secret YOUR_SECRET --dir D:\hanime -c
 ```
 
-**Script settings (⚙ 设置 at bottom-right):**
+**Script settings (the ⚙ gear button at bottom-right):**
 
 - Download mode: `aria2 RPC`
 - RPC URL: `http://127.0.0.1:6800/jsonrpc`
 - RPC secret: must match your `--rpc-secret` (leave empty if none)
 - Save dir: leave empty to use aria2's default, or set e.g. `D:\hanime`
 - Proxy: `http://127.0.0.1:7890` or `socks5://127.0.0.1:1080`
-- Click **测试 aria2 连接** (Test connection) to verify.
+- Click **Test aria2 connection** to verify.
 
 ---
 
@@ -87,7 +87,7 @@ Multi-level is supported, e.g. `{author}/{date}/{index} {title}` → `D:\hanime\
 
 ## Push Throttling (Anti Rate-Limit)
 
-A **推送限速** toggle in settings, **off by default**:
+A **push throttling** toggle in settings, **off by default**:
 
 - When ON: batch tasks are processed **strictly one-by-one** (fetch video page → push to aria2), waiting the configured interval between tasks; the author-list pagination also waits.
 - When OFF: original behavior (3 concurrent fetch+push), fastest.
@@ -103,9 +103,9 @@ A **推送限速** toggle in settings, **off by default**:
 
 - Every task's progress (including author-list pagination) is **written to GM storage in real time**; page destruction loses nothing.
 - Opening **any** hanime1.me page auto-resumes the unfinished queue from where it stopped — an interrupted task is retried, without missing or duplicating any video.
-- The log panel header shows the **global queue progress** (e.g. `队列 37/92`), still accurate across pages.
-- To pause: click **停止队列** (Stop queue) in the log panel, or the Tampermonkey menu *停止批量任务（保留进度）*. It will **not** auto-resume after a manual stop.
-- To resume: Tampermonkey menu *继续批量任务（恢复中断的队列）*.
+- The log panel header shows the **global queue progress** (e.g. `37/92`), still accurate across pages.
+- To pause: click **Stop queue** in the log panel, or the Tampermonkey menu *Stop batch task (keep progress)*. It will **not** auto-resume after a manual stop.
+- To resume: Tampermonkey menu *Resume batch task (recover interrupted queue)*.
 - Note: resuming only runs on hanime1.me pages — if the whole tab leaves the site, the queue suspends and resumes when you return to any page on the site.
 
 ---
@@ -114,21 +114,21 @@ A **推送限速** toggle in settings, **off by default**:
 
 **Listing pages (home/search/tag/playlist)**
 - A checkbox appears at the top-left of every video cover; the toolbar rail badge shows the checked count.
-- **下载勾选(N)** → script visits each video page, resolves the highest-quality direct link, and pushes to aria2 (or browser download).
+- **Download checked (N)** → script visits each video page, resolves the highest-quality direct link, and pushes to aria2 (or browser download).
 
 **Video page**
-- Below the player: quality selector + **⬇ 下载当前视频** + **👤 批量下载当前作者** + **⚙ 设置**.
-- 批量下载当前作者 locates the author's **upload page** (`/user/{id}/uploaded` — the full list corresponding to the right-sidebar videos) and auto-paginates to collect **all** videos (not limited by the 60-item sidebar), then queues them after confirmation.
+- Below the player: quality selector + **Download current video** + **Download current author** + **Settings** (gear).
+- **Download current author** locates the author's **upload page** (`/user/{id}/uploaded` — the full list corresponding to the right-sidebar videos) and auto-paginates to collect **all** videos (not limited by the 60-item sidebar), then queues them after confirmation.
 
 **Author page (/user/xxx)**
-- Top of page: **批量下载当前作者全部视频** / **下载本页视频**.
+- Top of page: **Download all videos by the current author** / **Download this page's videos**.
 - The full download also uses the upload page to collect everything (the home page only shows the latest 12).
 
 **Log panel**
-- Bottom-left **下载日志**. Header shows **队列 N/M · 已推送 N · 失败 N** and a **停止队列** button.
-- **Green bold line `✓ 已推送至 aria2: Author/File (1080p)`** = successfully pushed to aria2.
+- Bottom-left **download log**. Header shows **queue N/M · pushed N · failed N** and a **Stop queue** button.
+- **Green bold line `✓ Pushed to aria2: Author/File (1080p)`** = successfully pushed to aria2.
 - Red lines = failures and reasons; grey lines = progress info.
-- 清空 (Clear) resets the log and stats.
+- **Clear** resets the log and stats.
 
 ---
 
@@ -138,7 +138,7 @@ A **推送限速** toggle in settings, **off by default**:
 - Unthrottled batch mode fetches video pages in the background via `GM_xmlhttpRequest` with concurrency 3, not occupying the current tab; throttled mode switches to serial + interval.
 - Sub-directories: aria2's `dir` = save dir + template directory part (e.g. `D:\hanime/AuthorA`), `out` = the plain filename; aria2 creates missing dirs.
 - Some videos may only have 720p/480p; the script auto-degrades to the highest available.
-- Paywalled/member-only videos without a direct link show "未检测到视频源".
+- Paywalled/member-only videos without a direct link show "No video source detected".
 
 ---
 
@@ -148,8 +148,8 @@ A **推送限速** toggle in settings, **off by default**:
 - **Proxy not working**: the proxy only applies to aria2 download tasks; the script's own parsing goes through the browser network.
 - **Some videos fail in a batch**: check the bottom-left log for the reason (deleted/no source/timeout); failures don't affect the rest.
 - **No sub-directory created**: `/` with or without spaces are equivalent (`{author}/{title}` ≡ `{author} / {title}`); browser mode doesn't support sub-directories — use aria2 mode.
-- **Worried about rate limiting**: enable 推送限速 with a 5–10s interval.
-- **Pushes stopped after navigating**: since v1.2.0 the queue auto-resumes across pages; if the whole tab left the site, reopen any hanime1 page to continue; if you previously hit 停止队列, resume via the Tampermonkey menu *继续批量任务*.
+- **Worried about rate limiting**: enable push throttling with a 5–10s interval.
+- **Pushes stopped after navigating**: since v1.2.0 the queue auto-resumes across pages; if the whole tab left the site, reopen any hanime1 page to continue; if you previously hit Stop queue, resume via the Tampermonkey menu *Resume batch task*.
 
 ---
 
