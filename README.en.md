@@ -31,6 +31,82 @@
 
 ---
 
+## Interface Overview
+
+The script injects the following UI elements on different pages:
+
+### ① Right-edge toolbar (all listing pages)
+
+A red rail labeled "Download Tool" sits at the **middle of the right edge**, flush against the edge. **Hover it to reveal the button panel**:
+
+```
+  right edge
+  ┌────────┐
+  │  Down  │        ← red rail (flush; hover to reveal)
+  │  load  │
+  │  Tool  │
+  └────────┘
+     ↑
+  hover → panel slides out:
+
+  ┌──────────────┐
+  │  hanime 下载  │
+  │ [Select All] │
+  │ [Deselect]   │
+  │ [Download (5)]│  ← main button, number = checked count
+  │ [⚙ Settings] │
+  └──────────────┘
+```
+
+A small badge at the top of the rail shows the current checked count.
+
+### ② Checkbox (top-left of each video card)
+
+Each video cover on listing pages gets a small checkbox at its top-left corner:
+
+```
+┌──────────────┐
+│ ☑            │  ← checkbox
+│              │
+│   [cover]    │
+│              │
+│  video title │
+└──────────────┘
+```
+
+### ③ Video page panel (below the player)
+
+On a video page, a control row appears below the player:
+
+```
+[Quality ▼] [⬇ Download current video] [👤 Download current author] [⚙ Settings]
+```
+
+### ④ Author / series page top buttons
+
+Author pages and series pages get extra buttons at the top, e.g. "Download all videos by the current author" / "Download this page's videos".
+
+### ⑤ Log panel (bottom-left)
+
+During batch tasks, a log panel appears at the bottom-left showing live progress:
+
+```
+┌────────────────────────────────────┐
+│ Log  queue 37/92 · pushed 37 · failed 0 │
+│ Stop queue · Export zip · Clear · Collapse │
+├────────────────────────────────────┤
+│ [12:01:03] Author page 1: 60 videos     │
+│ [12:01:05] ✓ Pushed to aria2: ...       │ ← green = success
+│ [12:01:08] ✗ Push failed ...           │ ← red = failure
+└────────────────────────────────────┘
+```
+
+### ⑥ Settings dialog (⚙ button)
+
+Click any "⚙ Settings" button to open the settings dialog with download mode, aria2 RPC URL/secret, save dir, proxy, quality, rename rule, push throttling, and metadata export options (see the table below).
+
+---
+
 ## Usage by Page
 
 **Listing pages (home / search / tag / genre / series)**
