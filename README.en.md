@@ -35,45 +35,16 @@
 
 The script injects the following UI elements on different pages:
 
-### ① Right-edge toolbar (all listing pages)
+| # | Element | Location | Appearance & interaction |
+|---|---|---|---|
+| ① | **Right-edge toolbar** | All listing pages, middle of right edge | A red rail (vertical "Download Tool"), flush against the edge; hover to reveal a panel with "Select All / Deselect / Download checked (N) / ⚙ Settings"; a small badge on top shows the checked count |
+| ② | **Checkbox** | Top-left of each video cover | Semi-transparent rounded square; click to check, highlights pink when checked |
+| ③ | **Video page panel** | Video page, below the player | Horizontal row: quality dropdown + "⬇ Download current video" + "👤 Download current author" + "⚙ Settings" |
+| ④ | **Batch buttons** | Top of author / series pages | Primary "⬇ Download all / entire series" + secondary "Download this page" + "⚙ Settings" |
+| ⑤ | **Log panel** | Bottom-left (during batch tasks) | Header shows `queue N/M · pushed N · failed N`; green = success, red = failure, grey = progress; includes "Stop queue / Export zip / Clear / Collapse" |
+| ⑥ | **Settings dialog** | Opened by any "⚙ Settings" | Centered modal with download mode, aria2 RPC URL/secret, save dir, proxy, quality, rename rule, push throttling, metadata export (see below) |
 
-A red rail labeled "Download Tool" sits at the **middle of the right edge**, flush against the edge. **Hover it to reveal the button panel**:
-
-![Right toolbar](docs/toolbar.png)
-
-A small badge at the top of the rail shows the checked count. The panel contains "Select All / Deselect / Download checked (N) / Settings".
-
-### ② Checkbox (top-left of each video card)
-
-Each video cover on listing pages gets a small checkbox at its top-left corner:
-
-![Checkbox](docs/checkbox.png)
-
-### ③ Video page panel (below the player)
-
-On a video page, a control row appears below the player:
-
-![Video page panel](docs/watch-panel.png)
-
-From left to right: quality selector, Download current video, Download current author, Settings.
-
-### ④ Author / series page top buttons
-
-Author pages and series pages get extra batch-download buttons at the top:
-
-![Author page buttons](docs/author-panel.png)
-
-### ⑤ Log panel (bottom-left)
-
-During batch tasks, a log panel appears at the bottom-left showing live queue progress and pushed/failed stats; green lines = success, red lines = failure:
-
-![Log panel](docs/log-panel.png)
-
-### ⑥ Settings dialog (⚙ button)
-
-Click any "Settings" button to open the settings dialog with download mode, aria2 RPC URL/secret, save dir, proxy, quality, rename rule, push throttling, and metadata export options (see the table below):
-
-![Settings dialog](docs/settings.png)
+> Color scheme: primary buttons/highlights are pink (`#e04a6f`), success logs are green, failure logs are red — coordinated with the site's dark theme.
 
 ---
 
