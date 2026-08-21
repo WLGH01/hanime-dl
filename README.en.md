@@ -28,16 +28,6 @@
 
 ---
 
-## aria2 Quick Start
-
-```bash
-aria2c --enable-rpc --rpc-listen-all=false --rpc-secret YOUR_SECRET --dir D:\hanime -c
-```
-
-In settings (⚙): choose `aria2 RPC`, set RPC URL `http://127.0.0.1:6800/jsonrpc`, secret, save dir, and optional proxy, then click "Test connection".
-
----
-
 ## Rename Rules
 
 Default: `{author} - {title} [{quality}]`. Placeholders: `{title}` `{author}` `{id}` `{quality}` `{date}` `{index}`. A `/` in the template creates sub-directories, e.g. `{author} / {title} [{quality}]` → `D:\hanime\AuthorA\Title [1080p].mp4`.

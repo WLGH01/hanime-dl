@@ -28,16 +28,6 @@
 
 ---
 
-## aria2 快速上手
-
-```bash
-aria2c --enable-rpc --rpc-listen-all=false --rpc-secret 你的密钥 --dir D:\hanime -c
-```
-
-脚本设置（⚙）：下载方式选 `aria2 RPC`，填 RPC 地址 `http://127.0.0.1:6800/jsonrpc`、密钥（与 `--rpc-secret` 一致）、保存目录、代理（可选），点「测试连接」验证。
-
----
-
 ## 重命名规则
 
 默认 `{author} - {title} [{quality}]`。占位符：`{title}` `{author}` `{id}` `{quality}` `{date}` `{index}`。模板中写 `/` 即自动创建子目录，如 `{author} / {title} [{quality}]` → `D:\hanime\作者A\标题 [1080p].mp4`。
