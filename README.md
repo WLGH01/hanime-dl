@@ -1,160 +1,155 @@
-# hanime1.me Batch Downloader / 批量下载工具
+# hanime1.me 批量下载工具
 
-> A Tampermonkey userscript for batch downloading videos from [hanime1.me](https://hanime1.me/). Supports aria2 RPC (HTTP/SOCKS proxy), per-author full download, custom rename rules with auto sub-directories, push throttling, and a persistent task queue that resumes across page navigation.
->
-> 用于 [hanime1.me](https://hanime1.me/) 视频批量下载的油猴脚本。支持 aria2 RPC（http/socks 代理）、当前作者全量下载、自定义重命名规则并自动建子目录、推送限速，以及跨页面自动续传的持久化任务队列。
+> [English README](./README.en.md) · 用于 [hanime1.me](https://hanime1.me/) 视频批量下载的油猴脚本。支持 aria2 RPC（http/socks 代理）、当前作者全量下载、自定义重命名规则并自动建子目录、推送限速，以及跨页面自动续传的持久化任务队列。
 
-Userscript: `hanime1-batch-downloader.user.js` (v1.2.0)
+油猴脚本：`hanime1-batch-downloader.user.js`（v1.2.0）
 
 ---
 
-## Features / 功能总览
+## 功能总览
 
-| Feature 功能 | Description 说明 |
+| 功能 | 说明 |
 |---|---|
-| Download current video 下载当前视频 | Download panel on the video page with quality selector (480p/720p/1080p) 播放页出现下载面板，可选画质 |
-| Batch check 视频批量勾选 | Checkbox on every video card on any listing page (home/search/tag/playlist) 列表页每个视频卡片左上角出现勾选框 |
-| Select all on page 批量勾选本页 | Right-edge toolbar: Select All / Deselect / Download checked (hover the red rail to reveal) 右侧贴边工具栏 |
-| Download current author 批量下载当前作者 | Collects the author's **full** upload list via the `/user/{id}/uploaded` page with auto-pagination (not limited by the 60-item sidebar) 自动翻页收集作者全部视频 |
-| aria2 RPC support | Multi-connection download, resume support, secret auth, connection test 多线程、断点续传、密钥鉴权、可测试连接 |
-| HTTP / SOCKS proxy | Proxy passed to aria2's `all-proxy`; both `http://` and `socks5://` supported 同时支持 http 与 socks 代理 |
-| Custom rename rule 自定义重命名 | Placeholders `{title}` `{author}` `{id}` `{quality}` `{date}` `{index}`; a `/` in the template creates sub-directories 模板中写 `/` 自动创建子目录 |
-| Push throttling 推送限速 | Optional: serial push with configurable interval to avoid rate limiting (off by default) 防止请求过快被站点限制 |
-| **Persistent queue / cross-page resume 队列跨页续传** | Progress saved in real time; navigating away or going back **does not stop the queue** — it auto-resumes on any hanime1 page 点链接/回退不中断，自动续传 |
-| Browser fallback 浏览器直接下载 | Single-thread `GM_download` mode without aria2 (no sub-directories) 备用模式 |
+| 下载当前视频 | 视频播放页出现下载面板，可选画质，一键下载 |
+| 视频批量勾选 | 所有列表页（首页/搜索/标签/播放列表）的每个视频卡片左上角出现勾选框 |
+| 批量勾选本页 | 右侧贴边工具栏「全选本页 / 取消全选 / 下载勾选(N)」（鼠标移到右缘竖条即弹出） |
+| 批量下载当前作者 | 视频页「👤 批量下载当前作者」按钮，或作者主页「批量下载当前作者全部视频」；自动翻页收集全部视频 |
+| aria2 RPC 支持 | 多线程下载、断点续传，支持密钥鉴权，可测试连接 |
+| http/socks 代理 | 代理地址传给 aria2 的 `all-proxy`，同时支持 `http://` 与 `socks5://` |
+| 自定义重命名规则 | 模板占位符：`{title}` `{author}` `{id}` `{quality}` `{date}` `{index}`；**模板中写 `/` 即按作者等自动创建子目录** |
+| 推送限速 | 可选开关：任务逐个串行推送 + 可配置间隔秒数，防止请求过快被站点限制；默认关闭（不限速） |
+| **任务队列跨页续传** | 批量进度实时保存；点别的链接/回上一页**不会中断任务**，打开任意 hanime1 页面自动接着推送 |
+| 浏览器直接下载 | 无 aria2 时的备用模式（单线程，走 GM_download；不支持子目录） |
 
 ---
 
-## Installation / 安装
+## 安装
 
-1. Install [Tampermonkey](https://www.tampermonkey.net/) in your browser. 浏览器安装 Tampermonkey（篡改猴）。
-2. Tampermonkey → Dashboard → Utilities → *Import from file* and choose `hanime1-batch-downloader.user.js`; or create a new script and paste the full content. 管理面板 → 实用工具 → 导入文件，或新建脚本粘贴全部内容。
-3. Open https://hanime1.me/ — a **red vertical rail labeled 下载工具** appears at the right edge of the screen when it works; hover it to open the panel. 屏幕右缘出现红色竖条即安装成功，鼠标移上去弹出工具面板。
+1. 浏览器安装 Tampermonkey（篡改猴）
+2. Tampermonkey → 管理面板 → 实用工具 → 导入文件，选择 `hanime1-batch-downloader.user.js`；或新建脚本，粘贴全部内容后保存
+3. 打开 https://hanime1.me/ ，屏幕**右缘中间出现红色竖条「下载工具」**即安装成功，鼠标移上去即弹出工具面板
 
 ---
 
-## aria2 Quick Start (Recommended) / aria2 快速上手（推荐）
+## aria2 快速上手（推荐）
 
-The script only parses videos and pushes download tasks; the actual downloading is done by aria2 (multi-thread, proxy, resume).
+脚本只负责解析和推送任务，实际下载由 aria2 完成（多线程、代理、断点续传）。
 
-**Start aria2 with RPC (Windows):** 启动 aria2（带 RPC）：
-
+**Windows 启动 aria2（带 RPC）：**
 ```
-aria2c --enable-rpc --rpc-listen-all=false --rpc-secret YOUR_SECRET --dir D:\hanime -c
+aria2c --enable-rpc --rpc-listen-all=false --rpc-secret 你的密钥 --dir D:\hanime -c
 ```
 
-**Script settings (右下角 ⚙ 设置):**
-
-- Download mode 下载方式: `aria2 RPC`
-- RPC URL: `http://127.0.0.1:6800/jsonrpc`
-- RPC secret 密钥: must match your `--rpc-secret` (leave empty if none)
-- Save dir 保存目录: leave empty to use aria2's default, or set e.g. `D:\hanime`
-- Proxy 代理: `http://127.0.0.1:7890` or `socks5://127.0.0.1:1080`
-- Click **测试 aria2 连接** (Test connection) to verify.
+**脚本设置（右下角 ⚙ 设置）：**
+- 下载方式：aria2 RPC
+- RPC 地址：`http://127.0.0.1:6800/jsonrpc`
+- RPC 密钥：与你启动参数 `--rpc-secret` 一致（没设就留空）
+- 保存目录：留空用 aria2 默认目录，或填 `D:\hanime`
+- 代理：`http://127.0.0.1:7890` 或 `socks5://127.0.0.1:1080`（即 aria2 的 all-proxy，http/socks 均可）
+- 点「测试 aria2 连接」验证
 
 ---
 
-## Rename Rules & Sub-directories / 重命名规则与子目录
+## 重命名规则与子目录
 
-Default template: `{author} - {title} [{quality}]` (all files in one folder)
+默认模板：`{author} - {title} [{quality}]`（全部保存在同一目录）
 
-**Per-author folders:** put a `/` in the template, e.g.:
+**按作者建目录**：在模板中用 `/` 分隔即可，例如：
 
 ```
 {author} / {title} [{quality}]
 ```
 
-Result (assuming save dir `D:\hanime`):
+生成结果（假设保存目录设为 `D:\hanime`）：
 
 ```
-D:\hanime\AuthorA\Title [1080p].mp4
-D:\hanime\AuthorB\Title [1080p].mp4
+D:\hanime\作者A\标题 [1080p].mp4
+D:\hanime\作者B\标题 [1080p].mp4
 ```
 
-Multi-level is supported, e.g. `{author}/{date}/{index} {title}` → `D:\hanime\AuthorA\2026-08-21\005 Title.mp4`. aria2 auto-creates missing directories.
+也支持多级目录，如 `{author}/{date}/{index} {title}` → `D:\hanime\作者A\2026-08-21\005 标题.mp4`。aria2 会自动创建不存在的目录。
 
-| Placeholder 占位符 | Meaning 含义 |
+| 占位符 | 含义 |
 |---|---|
-| `{title}` | Video title 视频标题 |
-| `{author}` | Author name 作者名 |
-| `{id}` | Video ID (the `v=` number in the URL) 视频 ID |
-| `{quality}` | Quality, e.g. 1080p 画质 |
-| `{date}` | Publish date, e.g. 2026-08-21 发布日期 |
-| `{index}` | Batch index, zero-padded from 001 序号 |
+| `{title}` | 视频标题 |
+| `{author}` | 作者名 |
+| `{id}` | 视频 ID（即 URL 里的 v= 数字） |
+| `{quality}` | 画质，如 1080p |
+| `{date}` | 发布日期，如 2026-08-21 |
+| `{index}` | 批量下载中的序号（001 起） |
 
-- Only the `/` you **explicitly** write in the template creates directories; `/` inside titles/author names is replaced with spaces to avoid unexpected nesting. 只有模板中显式写的 `/` 才会建目录；标题/作者名里的 `/` 会被替换为空格。
-- Illegal filename characters `\/:*?"<>|` are replaced with spaces. 非法字符自动替换为空格。
-
----
-
-## Push Throttling (Anti Rate-Limit) / 推送限速（防封锁）
-
-A **推送限速** toggle in settings, **off by default**:
-
-- When ON: batch tasks are processed **strictly one-by-one** (fetch video page → push to aria2), waiting the configured interval between tasks; the author-list pagination also waits. 逐个串行 + 间隔。
-- When OFF: original behavior (3 concurrent fetch+push), fastest. 保持并发，速度最快。
-- Recommended: enable it with a 5–10s interval for large batches (tens of videos). 大批量建议开启，间隔 5~10 秒。
+- 只有**模板里显式写的 `/`** 才会创建目录；标题、作者名里自带的 `/` 会被自动替换成空格，不会产生意外层级
+- 文件名中的 `\/:*?"<>|` 等非法字符自动替换为空格
 
 ---
 
-## Persistent Queue & Cross-Page Resume / 任务队列跨页续传（v1.2.0）
+## 推送限速（防封锁）
 
-**Problem 痛点:** previously the batch loop ran inside the current page's JS context — clicking a link or going back destroyed the page and stopped the pushes.
+设置中新增「推送限速」开关，**默认关闭（不限速）**：
 
-**Now 现在:**
-
-- Every task's progress (including author-list pagination) is **written to GM storage in real time**; page destruction loses nothing. 每个任务进度实时写入油猴存储。
-- Opening **any** hanime1.me page auto-resumes the unfinished queue from where it stopped — an interrupted task is retried, without missing or duplicating any video. 打开任意页面自动续传，被中断的任务会重试。
-- The log panel header shows the **global queue progress** (e.g. `队列 37/92`), still accurate across pages. 日志面板显示全局队列进度。
-- To pause: click **停止队列** (Stop queue) in the log panel, or the Tampermonkey menu *停止批量任务（保留进度）*. It will **not** auto-resume after a manual stop. 手动停止后不会自动恢复。
-- To resume: Tampermonkey menu *继续批量任务（恢复中断的队列）*. 用菜单手动恢复。
-- Note: resuming only runs on hanime1.me pages — if the whole tab leaves the site, the queue suspends and resumes when you return to any page on the site. 续传仅在 hanime1.me 页面上进行。
+- 开启后：批量任务改为**逐个串行**处理（抓取视频页 → 推送 aria2），每个任务之间等待设置的间隔秒数；作者批量下载的**翻页抓取**同样会等待间隔
+- 关闭时：保持原行为（3 并发抓取 + 推送），速度最快
+- 建议：大批量（几十个）且担心被站点限制时开启，间隔 5~10 秒比较稳妥
 
 ---
 
-## Usage by Page / 各页面操作
+## 任务队列跨页续传（v1.2.0）
 
-**Listing pages (home/search/tag/playlist) 列表页**
-- A checkbox appears at the top-left of every video cover; the toolbar rail badge shows the checked count. 每个封面左上角有勾选框。
-- **下载勾选(N)** → script visits each video page, resolves the highest-quality direct link, and pushes to aria2 (or browser download). 逐个解析直链并推送。
+**痛点**：之前批量推送跑在当前页面里，一旦点了别的链接或回上一页，页面被销毁，推送就停了。
 
-**Video page 视频播放页**
-- Below the player: quality selector + **⬇ 下载当前视频** + **👤 批量下载当前作者** + **⚙ 设置**.
-- 批量下载当前作者 locates the author's **upload page** (`/user/{id}/uploaded` — the full list corresponding to the right-sidebar videos) and auto-paginates to collect **all** videos (not limited by the 60-item sidebar), then queues them after confirmation. 自动走作品专页收集全量视频。
-
-**Author page 作者主页 (/user/xxx)**
-- Top of page: **批量下载当前作者全部视频** / **下载本页视频**.
-- The full download also uses the upload page to collect everything (the home page only shows the latest 12). 主页本身只显示最近 12 个，完整列表走作品专页。
-
-**Log panel 日志面板**
-- Bottom-left **下载日志**. Header shows **队列 N/M · 已推送 N · 失败 N** and a **停止队列** button.
-- **Green bold line `✓ 已推送至 aria2: Author/File (1080p)`** = successfully pushed to aria2. 绿色加粗行 = 已成功推送给 aria2。
-- Red lines = failures and reasons; grey lines = progress info. 红色行 = 失败；灰色行 = 过程信息。
-- 清空 (Clear) resets the log and stats.
+**现在**：
+- 每个任务的进度（包括作者列表翻页收集）**实时写入油猴存储**，页面销毁不丢
+- 打开任意 hanime1.me 页面（包括点链接跳转后的新页面），脚本检测到未完成队列会**自动从中断处继续**——做到一半被打断的那个任务会重试，不会漏也不会重
+- 日志面板标题栏显示**全局队列进度**（如 `队列 37/92`），跨页后依然准确
+- 想暂停：日志面板标题栏「**停止队列**」，或油猴菜单「停止批量任务（保留进度）」；停止后不会自动恢复
+- 恢复：油猴菜单「**继续批量任务（恢复中断的队列）**」
+- 注意：续传只在 hanime1.me 页面上进行——如果整个标签页都离开了本站，任务会挂起，回到任意本站页面后自动继续
 
 ---
 
-## Technical Notes / 技术说明
+## 各页面操作
 
-- The site embeds direct MP4 links on `vdownload.hembed.com` (with a `secure` token) directly in the video page. Verified: no cookie needed, CORS fully open, Range supported — aria2 can download with multiple connections; requires `Referer: https://hanime1.me/` (auto-added by the script). 站点内嵌 MP4 直链，无需 cookie、CORS 全开、支持 Range。
-- Unthrottled batch mode fetches video pages in the background via `GM_xmlhttpRequest` with concurrency 3, not occupying the current tab; throttled mode switches to serial + interval. 不限速并发 3，不占用标签页。
-- Sub-directories: aria2's `dir` = save dir + template directory part (e.g. `D:\hanime/AuthorA`), `out` = the plain filename; aria2 creates missing dirs. 子目录由 dir 参数实现。
-- Some videos may only have 720p/480p; the script auto-degrades to the highest available. 按最高可用自动降级。
-- Paywalled/member-only videos without a direct link show "未检测到视频源". 付费/会员视频无直链会提示。
+**列表页（首页/搜索/标签/播放列表）**
+- 每个视频封面左上角有勾选框；勾选后右侧工具栏竖条上会显示数量角标
+- 「下载勾选(N)」→ 脚本逐个访问视频页解析出最高画质直链 → 推送到 aria2（或浏览器下载）
+
+**视频播放页**
+- 播放器下方出现「画质选择 + 下载当前视频 + 批量下载当前作者」面板
+- 画质默认「最高」，站点一般提供 480p/720p/1080p
+- 「批量下载当前作者」自动定位到该作者的**作品专页**（`/user/{id}/uploaded`，即播放页右侧作者视频列表对应的完整列表）并自动翻页收集**全部**视频（不受右侧栏 60 个显示上限影响），确认后批量入队
+
+**作者主页（/user/xxx）**
+- 页面顶部出现「批量下载当前作者全部视频 / 下载本页视频」
+- 「批量下载当前作者全部视频」同样改走作品专页收集全量视频（主页本身只显示最近 12 个）
+
+**日志面板**：左下角「下载日志」可展开。标题栏实时统计 **队列 N/M · 已推送 N · 失败 N**，并有「停止队列」按钮；正文里：
+- **绿色加粗行 `✓ 已推送至 aria2: 作者/文件名 (1080p)`** = 该任务已成功推送给 aria2
+- 红色行 = 失败及原因；灰色行 = 过程信息（翻页进度、限速等待等）
+- 点「清空」可重置日志和统计
 
 ---
 
-## FAQ / 常见问题
+## 技术说明
 
-- **aria2 connection failed / aria2 连接失败**: confirm aria2c is running and the RPC URL/secret are correct (default port 6800). 确认 aria2c 已启动且地址/密钥正确。
-- **Proxy not working / 代理不生效**: the proxy only applies to aria2 download tasks; the script's own parsing goes through the browser network. 代理只作用于 aria2 下载任务。
-- **Some videos fail in a batch / 批量任务部分失败**: check the bottom-left log for the reason (deleted/no source/timeout); failures don't affect the rest. 展开日志查看原因，失败不影响其余。
-- **No sub-directory created / 没有生成子目录**: `/` with or without spaces are equivalent (`{author}/{title}` ≡ `{author} / {title}`); browser mode doesn't support sub-directories — use aria2 mode. 浏览器模式不支持子目录，请用 aria2 模式。
-- **Worried about rate limiting / 担心被站点限制**: enable 推送限速 with a 5–10s interval. 开启限速并设 5~10 秒间隔。
-- **Pushes stopped after navigating / 切页/回退后推送停了?**: since v1.2.0 the queue auto-resumes across pages; if the whole tab left the site, reopen any hanime1 page to continue; if you previously hit 停止队列, resume via the Tampermonkey menu *继续批量任务*. v1.2.0 起跨页自动续传；手动停止过则用菜单恢复。
+- 站点视频页直接内嵌 `vdownload.hembed.com` 的 MP4 直链（带 `secure` 令牌），实测：无需 cookie、CORS 全开、支持 Range——aria2 可直接多线程下载，需要 `Referer: https://hanime1.me/` 请求头（脚本已自动附带）
+- 不限速时批量模式由脚本在后台用 `GM_xmlhttpRequest` 抓取各视频页解析，并发 3，不占用当前标签页；开启限速后改为串行 + 间隔
+- 子目录实现方式：aria2 的 `dir` 参数 = 保存目录 + 模板目录部分（如 `D:\hanime/作者A`），`out` 参数 = 纯文件名；aria2 自动创建缺失目录
+- 部分视频可能仅有 720p/480p 源，脚本按「最高可用」自动降级
+- 付费/会员视频若无直链，面板会提示「未检测到视频源」
 
 ---
 
-## License / 许可
+## 常见问题
+
+- **aria2 连接失败**：确认 aria2c 已启动且 RPC 地址/密钥正确；RPC 端口默认 6800
+- **代理不生效**：代理只作用于 aria2 下载任务；脚本自身解析走浏览器网络
+- **批量任务某些视频失败**：展开左下角日志查看具体原因（视频删除/无源/网络超时），失败不影响其余任务
+- **没有生成子目录**：检查模板里 `/` 前后是否有空格均可（`{author}/{title}` 与 `{author} / {title}` 等效）；浏览器直连模式不支持子目录，请用 aria2 模式
+- **担心被站点限制**：设置中开启「推送限速」并设 5~10 秒间隔
+- **切页/回退后推送停了？**：v1.2.0 起队列会跨页自动续传；若整站标签页都关了，重新打开任意 hanime1 页面即自动继续；若之前点过「停止队列」，请用油猴菜单「继续批量任务」手动恢复
+
+---
+
+## 许可
 
 [LICENSE](./LICENSE)
