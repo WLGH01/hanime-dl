@@ -1,6 +1,7 @@
 # hanime1.me 批量下载工具
 
-> [English README](./README.en.md) · 用于 [hanime1.me](https://hanime1.me/) 视频批量下载的油猴脚本。支持 aria2 RPC（http/socks 代理）、当前作者全量下载、自定义重命名规则并自动建子目录、推送限速，以及跨页面自动续传的持久化任务队列。
+## 中文 | [English ](./README.en.md) ·
+> 用于 [hanime1.me](https://hanime1.me/) 视频批量下载的油猴脚本。支持 aria2 RPC（http/socks 代理）、当前作者全量下载、自定义重命名规则并自动建子目录、推送限速，以及跨页面自动续传的持久化任务队列。
 
 油猴脚本：`hanime1-batch-downloader.user.js`（v1.2.0）
 
