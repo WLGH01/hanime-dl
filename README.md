@@ -2,7 +2,7 @@
 
 ## 中文 | [English](./README.en.md)
 
-> 用于 [hanime1.me](https://hanime1.me/) 视频批量下载的油猴脚本（v1.3.0）。支持 aria2 RPC、作者/系列全量下载、自定义重命名、跨页续传、Emby NFO 元数据导出。
+> 用于 [hanime1.me](https://hanime1.me/) 视频批量下载的油猴脚本（v1.3.0）。支持 aria2 RPC、作者/系列全量下载、自定义重命名、跨页续传、Kodi/Emby/Jellyfin/Plex 兼容 NFO 元数据导出。
 
 ---
 
@@ -18,7 +18,7 @@
 | aria2 RPC | 多线程、断点续传、密钥鉴权、http/socks 代理、可测试连接 |
 | 重命名规则 | 模板占位符 + `/` 自动建子目录 |
 | 任务队列续传 | 进度实时持久化，切页/回退不中断，自动续传 |
-| 导出元数据 | Emby 兼容 NFO + 竖屏封面 + 横屏横幅，打包 zip |
+| 导出元数据 | Kodi 兼容 NFO + 竖屏封面 + 横屏横幅，打包 zip |
 | 推送限速 | 逐个串行 + 间隔，防站点封锁 |
 
 ---
@@ -102,13 +102,28 @@
 
 | 文件 | 内容 |
 |---|---|
-| `标题 [1080p].nfo` | Emby/Kodi 兼容 `<movie>`：标题、年份、发布时间、简介、作者、标签、点赞百分比（换算十分制 `<rating>`） |
+| `标题 [1080p].nfo` | Kodi/XBMC 格式 `<movie>`：标题、年份、发布时间、简介、作者、标签、点赞百分比（换算十分制 `<rating>`） |
 | `标题 [1080p]-poster.jpg` | 竖屏封面（`image/cover/{id}.jpg`） |
 | `标题 [1080p]-banner.jpg` | 横屏横幅（`image/thumbnail/{id}h.jpg`） |
 
-zip 内部**按重命名规则建目录**（如 `作者A/标题 [1080p].nfo`），解压后整个目录拖进 aria2/Emby 下载目录即可自动对齐、被 Emby 识别。日志面板也有「导出zip」按钮可随时手动导出。
+zip 内部**按重命名规则建目录**（如 `作者A/标题 [1080p].nfo`），解压后整个目录拖进媒体库目录即可自动对齐识别。日志面板也有「导出zip」按钮可随时手动导出。
 
 > NFO、封面、横幅**全部打包进 zip** 统一导出，不单独推 aria2（避免重复下载）。
+
+**NFO 格式兼容性**：生成的 `.nfo` 采用 Kodi/XBMC 标准格式，以下媒体库可直接识别：
+
+- **Kodi**（原生格式）
+- **Emby**（原生支持）
+- **Jellyfin**（原生支持）
+- **Plex**（需启用「Plex NFO Agent」，Plex 1.43.1+，建库时手动选该 agent）
+
+此外，以下媒体管理工具也能读取/生成此格式，可用来二次编辑元数据：
+
+- **TinyMediaManager (tmm)**
+- **MediaElch**
+- **Media Center Master**
+
+> 提示：Plex 默认刮削器不读 NFO，需在「设置 → 管理 → 媒体库 → 高级 → 代理」里手动选择 *Plex NFO Movie*。
 
 ---
 

@@ -2,7 +2,7 @@
 
 ## [中文](./README.md) | English
 
-> A Tampermonkey userscript for batch downloading videos from [hanime1.me](https://hanime1.me/) (v1.3.0). Supports aria2 RPC, full author/series download, custom rename rules, cross-page resume, and Emby NFO metadata export.
+> A Tampermonkey userscript for batch downloading videos from [hanime1.me](https://hanime1.me/) (v1.3.0). Supports aria2 RPC, full author/series download, custom rename rules, cross-page resume, and Kodi/Emby/Jellyfin/Plex-compatible NFO metadata export.
 
 ---
 
@@ -18,7 +18,7 @@
 | aria2 RPC | Multi-connection, resume, secret auth, http/socks proxy, connection test |
 | Rename rules | Placeholders + `/` auto-creating sub-directories |
 | Cross-page resume | Progress persisted in real time; navigation doesn't interrupt |
-| Metadata export | Emby-compatible NFO + vertical poster + horizontal banner, bundled as zip |
+| Metadata export | Kodi-compatible NFO + vertical poster + horizontal banner, bundled as zip |
 | Push throttling | Serial push with interval to avoid rate limiting |
 
 ---
@@ -102,13 +102,28 @@ On by default. After a batch finishes, a **metadata zip** is downloaded automati
 
 | File | Content |
 |---|---|
-| `Title [1080p].nfo` | Emby/Kodi `<movie>`: title, year, premiere date, plot, author, tags, like percentage (mapped to a 0–10 `<rating>`) |
+| `Title [1080p].nfo` | Kodi/XBMC `<movie>`: title, year, premiere date, plot, author, tags, like percentage (mapped to a 0–10 `<rating>`) |
 | `Title [1080p]-poster.jpg` | Vertical poster (`image/cover/{id}.jpg`) |
 | `Title [1080p]-banner.jpg` | Horizontal banner (`image/thumbnail/{id}h.jpg`) |
 
-The zip mirrors the **rename-rule directory structure** (e.g. `AuthorA/Title [1080p].nfo`), so unzip and drop the whole tree into your aria2/Emby download folder for automatic alignment. The log panel also has an "Export zip" button for manual export.
+The zip mirrors the **rename-rule directory structure** (e.g. `AuthorA/Title [1080p].nfo`), so unzip and drop the whole tree into your media library folder for automatic alignment. The log panel also has an "Export zip" button for manual export.
 
 > NFO, poster, and banner are **all bundled into the zip** — not pushed separately to aria2 (avoiding duplicate downloads).
+
+**NFO format compatibility**: the generated `.nfo` uses the Kodi/XBMC standard format, natively recognized by:
+
+- **Kodi** (native format)
+- **Emby** (native support)
+- **Jellyfin** (native support)
+- **Plex** (requires the "Plex NFO Agent", Plex 1.43.1+; select the agent manually when creating the library)
+
+The following media managers can also read/write this format for further editing:
+
+- **TinyMediaManager (tmm)**
+- **MediaElch**
+- **Media Center Master**
+
+> Tip: Plex's default scraper does not read NFO — select *Plex NFO Movie* under Settings → Manage → Libraries → Advanced → Agent.
 
 ---
 
