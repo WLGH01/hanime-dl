@@ -1,9 +1,13 @@
 // ==UserScript==
 // @name         hanime1.me 批量下载工具 (Batch Downloader)
+// @name:en      hanime1.me Batch Downloader
+// @name:zh-CN   hanime1.me 批量下载工具
 // @namespace    hanime1-batch-dl
-// @version      1.3.0
+// @version      1.3.1
 // @description  视频批量下载：本页批量勾选/全选、当前作者全部下载、系列(playlist)全部下载、下载当前视频；支持 aria2 RPC（http/socks 代理）、重命名规则按 / 自动建子目录、推送限速、右侧贴边工具栏；任务队列跨页续传；批量完成后自动打包导出 Emby 元数据 zip（NFO+封面+横幅，按重命名目录结构）
+// @description:en  Batch download videos from hanime1.me: batch check/select-all, download current author's full uploads, download entire series, download current video; aria2 RPC (http/socks proxy), rename rules with sub-directories, push throttling, cross-page resume, and Emby NFO metadata zip export
 // @author       WorkBuddy
+// @license      MIT
 // @match        https://hanime1.me/*
 // @match        https://hanime1.com/*
 // @grant        GM_xmlhttpRequest
