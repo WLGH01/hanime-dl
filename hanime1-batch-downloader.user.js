@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         hanime1.me 批量下载工具 (Batch Downloader)
 // @namespace    hanime1-batch-dl
-// @version      1.2.0
-// @description  视频批量下载：本页批量勾选/全选、当前作者全部下载、下载当前视频；支持 aria2 RPC（http/socks 代理）、重命名规则按 / 自动建子目录、推送限速防封锁、右侧贴边工具栏；任务队列持久化，切换页面/回退后自动续传
+// @version      1.3.0
+// @description  视频批量下载：本页批量勾选/全选、当前作者全部下载、系列(playlist)全部下载、下载当前视频；支持 aria2 RPC（http/socks 代理）、重命名规则按 / 自动建子目录、推送限速、右侧贴边工具栏；任务队列跨页续传；批量完成后自动打包导出 Emby 元数据 zip（NFO+封面+横幅，按重命名目录结构）
 // @author       WorkBuddy
 // @match        https://hanime1.me/*
 // @match        https://hanime1.com/*
@@ -43,7 +43,8 @@
         renameTpl: '{author} - {title} [{quality}]',    // 占位符: {title} {author} {id} {quality} {date} {index}；用 / 分隔可创建子目录
         overwrite: true,                                // aria2 allow-overwrite
         throttle: false,                                // 推送限速开关（关闭 = 不限速）
-        throttleSec: 5                                  // 限速时每个任务的间隔秒数
+        throttleSec: 5,                                 // 限速时每个任务的间隔秒数
+        exportMeta: true                                // 导出封面 + Emby 兼容 NFO 元数据（作者/标签/点赞百分比）
     };
 
     var cfg = loadCfg();
@@ -124,6 +125,11 @@
         return /\/user\/\d+/.test(location.pathname);
     }
 
+    // 当前页是否是系列列表页（playlist）
+    function isPlaylistPage() {
+        return /\/playlist/.test(location.pathname);
+    }
+
     // 统一转成「作者上传视频」专页 URL。
     // 原因：/user/{id} 主页只显示最近 12 个视频且 ?page= 翻页无效（假分页），
     // 完整作品列表在 /user/{id}/uploaded（每页 60，?page= 真实有效）
@@ -192,9 +198,9 @@
      * ================================================================ */
 
     // 从 watch 页 HTML 解析视频信息
-    // 返回: { id, title, author, date, sources: {quality: url}, url }
+    // 返回: { id, title, author, date, plot, sources, url, cover, banner, tags, likePct }
     function parseWatchPage(html, pageUrl) {
-        var info = { url: pageUrl, sources: {} };
+        var info = { url: pageUrl, sources: {}, tags: [], likePct: 0 };
 
         var idm = pageUrl.match(/[?&]v=(\d+)/);
         info.id = idm ? idm[1] : '';
@@ -205,9 +211,40 @@
         var am = html.match(/id="video-artist-name"[^>]*>([\s\S]*?)<\/a>/);
         info.author = am ? decodeEntities(am[1]).trim() : '';
 
-        var dm = html.match(/观看次数[：:][\s\S]{0,40}?(\d{4}-\d{2}-\d{2})/);
+        // 发布日期：描述面板里「觀看次數：xxx  2026-08-01」的日期（比页面第一个日期更可靠）
+        var dm = html.match(/觀看次數[：:][^<]{0,30}?(\d{4}-\d{2}-\d{2})/);
+        if (!dm) dm = html.match(/观看次数[：:][\s\S]{0,40}?(\d{4}-\d{2}-\d{2})/);
         if (!dm) dm = html.match(/(\d{4}-\d{2}-\d{2})/);
         info.date = dm ? dm[1] : '';
+
+        // 简介：<div class="...video-caption-text...">…</div>
+        var pm = html.match(/class="[^"]*video-caption-text[^"]*"[\s\S]*?>([\s\S]*?)<\/div>/);
+        if (pm) info.plot = decodeEntities(pm[1].replace(/<[^>]*>/g, '')).replace(/\s+/g, ' ').trim();
+
+        // 横幅（横屏 banner）：og:image 用 {id}h.jpg（1024×576 高清横版）
+        // 注意：视频页的 og:image 和 main-thumb 都是横向图；真正的竖屏封面是 image/cover/{id}.jpg，
+        // 仅在列表页出现，由 collectPageVideos 收集后经 processItem 传入 info.cover。
+        var bm = html.match(/<meta[^>]+property="og:image"[^>]+content="([^"]+)"/);
+        if (!bm) bm = html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:image"/);
+        if (bm) info.banner = bm[1].replace(/&amp;/g, '&');
+
+        // 标签：<div class="single-video-tag"><a href="/search?..."># 标签 (N)</a></div>
+        // 只取 href 指向 /search 的真实标签链接，过滤 add/remove 等 UI 按钮文本
+        var tagRe = /class="single-video-tag"[\s\S]*?<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g;
+        var tm2, tagSeen = {};
+        while ((tm2 = tagRe.exec(html))) {
+            if (!/\/search[?"]/.test(tm2[1]) && !/\/search$/.test(tm2[1])) continue;
+            var raw = tm2[2].replace(/<[^>]*>/g, '');          // 去掉内部 span
+            var t = decodeEntities(raw).replace(/^#/, '').replace(/\(\d+\)\s*$/, '').trim();
+            if (!t) continue;
+            if (/^(add|remove|like|dislike)$/i.test(t)) continue;   // 过滤 UI 词
+            if (!tagSeen[t]) { tagSeen[t] = 1; info.tags.push(t); }
+        }
+
+        // 点赞百分比：主视频点赞按钮 .video-like-btn 内 thumb_up 图标后跟百分比
+        // 形如 <i ...>thumb_up</i>100%&nbsp;<span>(2)</span>（取第一个匹配即主视频）
+        var lm = html.match(/thumb_up<\/i>\s*(\d{1,3})\s*%/);
+        if (lm) info.likePct = parseInt(lm[1], 10);
 
         // <source src="https://.../{id}-{quality}.mp4?secure=...">
         var re = /<source\s+src="(https?:\/\/[^"]+?\.mp4[^"]*)"/g;
@@ -234,23 +271,91 @@
         return { quality: best, url: info.sources[best] };
     }
 
-    // 收集当前页面上的视频卡片
-    // 返回: [{ url, title }]
+    /* ================================================================
+     *  元数据导出（Emby 兼容 NFO + 封面）
+     * ================================================================ */
+
+    // XML 转义
+    function xmlEsc(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&apos;');
+    }
+
+    // 生成 Emby/Kodi 兼容的 <movie> NFO。
+    // Emby 通过「与视频同名的 .nfo」识别元数据；作者写入 <artist>/<studio>，
+    // 标签写入 <tag>，点赞百分比换算为十分制 <rating>（0~10）。
+    function buildNfo(info) {
+        var year = info.date ? info.date.slice(0, 4) : '';
+        var rating = info.likePct != null && info.likePct > 0
+            ? (info.likePct / 10).toFixed(1)
+            : '';
+        var lines = [
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+            '<movie>',
+            '  <title>' + xmlEsc(info.title) + '</title>',
+            '  <originaltitle>' + xmlEsc(info.title) + '</originaltitle>'
+        ];
+        if (year) lines.push('  <year>' + year + '</year>');
+        if (info.date) lines.push('  <premiered>' + xmlEsc(info.date) + '</premiered>');
+        if (info.plot) lines.push('  <plot>' + xmlEsc(info.plot) + '</plot>');
+        if (info.author) {
+            lines.push('  <artist>' + xmlEsc(info.author) + '</artist>');
+            lines.push('  <studio>' + xmlEsc(info.author) + '</studio>');
+        }
+        // 点赞百分比 → Emby 十分制 rating（0~10）
+        if (rating !== '') lines.push('  <rating>' + rating + '</rating>');
+        lines.push('  <genre>Animation</genre>');
+        (info.tags || []).forEach(function (t) {
+            lines.push('  <tag>' + xmlEsc(t) + '</tag>');
+        });
+        lines.push('</movie>');
+        return lines.join('\n');
+    }
+
+    // 收集当前页面上的视频卡片（兼容普通列表页、playlist 系列页、genre 搜索页）
+    // 返回: [{ url, id, title }]
     function collectPageVideos(root) {
         root = root || document;
         var out = [], seen = {};
-        var links = root.querySelectorAll('a.video-link[href*="/watch?v="]');
-        for (var i = 0; i < links.length; i++) {
-            var a = links[i];
+
+        function addLink(a) {
             var href = a.href;
             var vm = href.match(/[?&]v=(\d+)/);
-            if (!vm || seen[vm[1]]) continue;
+            if (!vm || seen[vm[1]]) return;
             seen[vm[1]] = 1;
             var card = a.closest('.video-item-container') || a;
             var title = card.getAttribute('title') ||
                 (card.querySelector('.title') ? card.querySelector('.title').textContent.trim() : '') ||
+                (card.querySelector('.video-title') ? card.querySelector('.video-title').textContent.trim() : '') ||
+                (card.querySelector('.home-rows-videos-title') ? card.querySelector('.home-rows-videos-title').textContent.trim() : '') ||
+                (a.querySelector('.home-rows-videos-title') ? a.querySelector('.home-rows-videos-title').textContent.trim() : '') ||
                 vm[1];
-            out.push({ url: href, id: vm[1], title: title.trim() });
+            // 竖屏封面：列表页卡片里的 img（image/cover/{id}.jpg）
+            var cover = '';
+            var img = card.querySelector('img[src*="image/cover/"]') ||
+                      (a.querySelector && a.querySelector('img[src*="image/cover/"]'));
+            if (img) cover = img.src;
+            out.push({ url: href, id: vm[1], title: title.trim(), cover: cover });
+        }
+
+        // 1) 普通列表页：a.video-link
+        var links = root.querySelectorAll('a.video-link[href*="/watch?v="]');
+        for (var i = 0; i < links.length; i++) addLink(links[i]);
+
+        // 2) genre 搜索页 / playlist 系列页：直接 a[href*="/watch?v="]（无 video-link class）
+        //    genre 卡片：<a href="/watch?v=ID"><div.home-rows-videos-div><div.video-card-inner>…
+        //    playlist 卡片：<div.playlist-video-card><a href="…">
+        var directLinks = root.querySelectorAll('a[href*="/watch?v="]');
+        for (var k = 0; k < directLinks.length; k++) {
+            var a = directLinks[k];
+            if (a.classList.contains('video-link')) continue;   // 已处理
+            if (a.querySelector('.video-card-inner') || a.closest('.playlist-video-card')) {
+                addLink(a);
+            }
         }
         return out;
     }
@@ -287,6 +392,164 @@
      *  下载调度
      * ================================================================ */
 
+    /* ================================================================
+     *  元数据 ZIP 打包（浏览器下载后解压到 aria2/Emby 目录即可）
+     *  极简 STORE 模式 zip 生成器（无压缩，NFO/JPEG 本无压缩空间）
+     * ================================================================ */
+
+    var CRC_TABLE = (function () {
+        var t = new Array(256);
+        for (var n = 0; n < 256; n++) {
+            var c = n;
+            for (var k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+            t[n] = c >>> 0;
+        }
+        return t;
+    })();
+    function crc32(buf) {
+        var c = 0xFFFFFFFF;
+        for (var i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
+        return (c ^ 0xFFFFFFFF) >>> 0;
+    }
+    function strToBytes(s) {
+        var out = [];
+        for (var i = 0; i < s.length; i++) {
+            var code = s.charCodeAt(i);
+            if (code < 0x80) out.push(code);
+            else {
+                var bytes = unescape(encodeURIComponent(s[i]));
+                for (var j = 0; j < bytes.length; j++) out.push(bytes.charCodeAt(j));
+            }
+        }
+        return out;
+    }
+    function u16(v) { return [v & 0xFF, (v >>> 8) & 0xFF]; }
+    function u32(v) { return [v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF]; }
+
+    // 生成 STORE 模式 zip（UTF-8 文件名）；entries: [{name, data(Uint8Array)}]
+    function buildZip(entries) {
+        var localChunks = [], central = [], offset = 0;
+        entries.forEach(function (e) {
+            var nameBytes = strToBytes(e.name);
+            var data = e.data;
+            var crc = crc32(data);
+            // 本地文件头（30 字节 + 文件名）
+            var local = []
+                .concat(u32(0x04034b50), u16(20), u16(0x0800), u16(0), u16(0), u16(0),
+                    u32(crc), u32(data.length), u32(data.length), u16(nameBytes.length), u16(0));
+            localChunks.push(new Uint8Array(local));
+            localChunks.push(new Uint8Array(nameBytes));
+            localChunks.push(data);
+            // 中央目录（46 字节 + 文件名）
+            central = central
+                .concat(u32(0x02014b50), u16(20), u16(20), u16(0x0800), u16(0), u16(0), u16(0),
+                    u32(crc), u32(data.length), u32(data.length), u16(nameBytes.length),
+                    u16(0), u16(0), u16(0), u16(0), u32(0), u32(offset))
+                .concat(Array.prototype.slice.call(nameBytes));
+            offset += local.length + nameBytes.length + data.length;
+        });
+        var centralSize = central.length;
+        var eocd = []
+            .concat(u32(0x06054b50), u16(0), u16(0), u16(entries.length), u16(entries.length),
+                u32(centralSize), u32(offset), u16(0));
+        var all = localChunks.concat([new Uint8Array(central), new Uint8Array(eocd)]);
+        var total = 0;
+        all.forEach(function (a) { total += a.length; });
+        var out = new Uint8Array(total);
+        var p = 0;
+        all.forEach(function (a) { out.set(a, p); p += a.length; });
+        return out;
+    }
+
+    // 元数据收集器：批量任务期间累积 NFO 文本 + 封面/横幅图，任务完成后打包下载
+    var metaCollector = {
+        items: {},       // key: 目录/文件名, value: {data(Uint8Array), text?}
+        _order: [],
+        reset: function () { this.items = {}; this._order = []; },
+        putText: function (path, text) {
+            this.items[path] = { data: new Uint8Array(strToBytes(text)) };
+            if (this._order.indexOf(path) < 0) this._order.push(path);
+        },
+        putImage: function (path, bytes) {
+            if (!bytes) return;
+            this.items[path] = { data: bytes };
+            if (this._order.indexOf(path) < 0) this._order.push(path);
+        },
+        count: function () { return this._order.length; }
+    };
+
+    // 抓取图片二进制（封面/横幅）
+    function fetchImageBytes(url) {
+        return new Promise(function (resolve) {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: url,
+                headers: { 'User-Agent': UA, 'Referer': SITE + '/' },
+                responseType: 'arraybuffer',
+                timeout: 30000,
+                onload: function (res) {
+                    if (res.status >= 200 && res.status < 400 && res.response) {
+                        resolve(new Uint8Array(res.response));
+                    } else resolve(null);
+                },
+                onerror: function () { resolve(null); },
+                ontimeout: function () { resolve(null); }
+            });
+        });
+    }
+
+    // 把单个视频的元数据（NFO + 封面 + 横幅）加入收集器；zip 路径按重命名规则的子目录
+    function collectMetaForZip(info, target) {
+        if (!cfg.exportMeta) return Promise.resolve();
+        var base = target.filename.replace(/\.mp4$/i, '');
+        var prefix = target.subDir ? target.subDir + '/' : '';
+        // NFO（纯文本）
+        metaCollector.putText(prefix + base + '.nfo', buildNfo(info));
+        // 封面 + 横幅（抓二进制）
+        var jobs = [];
+        if (info.cover) {
+            var ext = (info.cover.match(/\.(jpe?g|png|webp)(\?|$)/i) || [])[1] || 'jpg';
+            jobs.push(fetchImageBytes(info.cover).then(function (b) {
+                if (b) metaCollector.putImage(prefix + base + '-poster.' + ext, b);
+            }));
+        }
+        if (info.banner && info.banner !== info.cover) {
+            var ext2 = (info.banner.match(/\.(jpe?g|png|webp)(\?|$)/i) || [])[1] || 'jpg';
+            jobs.push(fetchImageBytes(info.banner).then(function (b) {
+                if (b) metaCollector.putImage(prefix + base + '-banner.' + ext2, b);
+            }));
+        }
+        return Promise.all(jobs);
+    }
+
+    // 打包并下载元数据 zip
+    function exportMetaZip() {
+        var paths = metaCollector._order;
+        if (!paths.length) { toast('暂无已收集的元数据'); return Promise.resolve(false); }
+        var entries = paths.map(function (p) {
+            return { name: p, data: metaCollector.items[p].data };
+        });
+        try {
+            var zipBytes = buildZip(entries);
+            var blob = new Blob([zipBytes], { type: 'application/zip' });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = 'hanime1-metadata-' + new Date().toISOString().slice(0, 10) + '.zip';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+            log('✓ 已导出元数据 zip：' + entries.length + ' 个文件（解压后整目录拖入下载目录即可）', 'ok');
+            toast('元数据 zip 已下载（' + entries.length + ' 个文件）');
+            metaCollector.reset();
+            return Promise.resolve(true);
+        } catch (e) {
+            log('✗ 打包 zip 失败: ' + e.message, true);
+            return Promise.resolve(false);
+        }
+    }
+
     function downloadOne(info, index) {
         var picked = pickSource(info);
         if (!picked) {
@@ -321,7 +584,8 @@
             return aria2Rpc('aria2.addUri', ['token:' + cfg.aria2Secret, [picked.url], options]).then(function () {
                 log('✓ 已推送至 aria2: ' + target.display + ' (' + picked.quality + ')', 'ok');
                 statPushed();
-                return true;
+                // 元数据（NFO + 封面 + 横幅）统一收集进 zip，批量完成后一并导出；不再单独推 aria2
+                return collectMetaForZip(info, target).then(function () { return true; });
             }).catch(function (e) {
                 log('✗ 推送失败 ' + target.display + ' — ' + e.message, true);
                 statFailed();
@@ -335,7 +599,14 @@
                     url: picked.url,
                     name: target.filename,
                     headers: { 'Referer': SITE + '/' },
-                    onload: function () { log('✓ 下载完成: ' + target.filename, 'ok'); statPushed(); resolve(true); },
+                    onload: function () {
+                        log('✓ 下载完成: ' + target.filename, 'ok');
+                        statPushed();
+                        // 浏览器模式：元数据统一收集进 zip（批量完成后一并导出），不逐个下载
+                        collectMetaForZip(info, target).then(function () {
+                            resolve(true);
+                        });
+                    },
                     onerror: function (e) {
                         log('✗ 浏览器下载失败(' + target.filename + '): ' + (e.error || '未知错误') + '，建议改用 aria2 模式', true);
                         statFailed();
@@ -352,6 +623,8 @@
         return gmFetch(item.url).then(function (html) {
             var info = parseWatchPage(html, item.url);
             if (!info.title) info.title = item.title;
+            // 竖屏封面来自列表页卡片（image/cover/{id}.jpg），视频页没有
+            if (item.cover && !info.cover) info.cover = item.cover;
             return downloadOne(info, idx);
         }).catch(function (e) {
             log('✗ 获取信息失败: ' + item.title + ' — ' + e.message, true);
@@ -451,6 +724,10 @@
                 log('==== 批量任务结束: 成功推送 ' + qq.ok + '/' + qq.items.length + ' ====');
                 toast('批量下载完成: 已推送 ' + qq.ok + '/' + qq.items.length);
                 clearQueue();
+                // 批量完成后自动打包导出元数据 zip（NFO + 封面 + 横幅）
+                if (cfg.exportMeta && metaCollector.count() > 0) {
+                    exportMetaZip();
+                }
             }
         }
 
@@ -517,6 +794,10 @@
             q.page = q.page || 1;
             saveQueue(q);
             continueAuthorCollect();
+        } else if (q.phase === 'collectList') {
+            q.page = q.page || 1;
+            saveQueue(q);
+            continueListCollect();
         }
     }
 
@@ -528,6 +809,9 @@
         if (q.phase === 'collect') {
             log('检测到未完成的作者列表收集（已收集 ' + (q.items || []).length + ' 个，第 ' + (q.page || 1) + ' 页），自动继续…', true);
             continueAuthorCollect();
+        } else if (q.phase === 'collectList') {
+            log('检测到未完成的系列列表收集（已收集 ' + (q.items || []).length + ' 个，第 ' + (q.page || 1) + ' 页），自动继续…', true);
+            continueListCollect();
         } else if (q.phase === 'push') {
             if (q.stopped) {
                 log('检测到已手动暂停的批量任务（已完成 ' + queueDoneCount(q) + '/' + q.items.length + '），可通过菜单「继续批量任务」恢复', true);
@@ -577,7 +861,7 @@
         logPanel.innerHTML =
             '<div class="h1dl-log-head">' +
             '  <span>下载日志 <span id="h1dl-stat"></span></span>' +
-            '  <span><span class="h1dl-log-stop">停止队列</span> · <span class="h1dl-log-clear">清空</span> · <span class="h1dl-log-toggle">收起</span></span>' +
+            '  <span><span class="h1dl-log-stop">停止队列</span> · <span class="h1dl-log-zip">导出zip</span> · <span class="h1dl-log-clear">清空</span> · <span class="h1dl-log-toggle">收起</span></span>' +
             '</div>' +
             '<div class="h1dl-log-body"></div>';
         document.body.appendChild(logPanel);
@@ -587,6 +871,7 @@
             this.textContent = collapsed ? '展开' : '收起';
         });
         logPanel.querySelector('.h1dl-log-stop').addEventListener('click', stopQueue);
+        logPanel.querySelector('.h1dl-log-zip').addEventListener('click', exportMetaZip);
         logPanel.querySelector('.h1dl-log-clear').addEventListener('click', function () {
             logBody.innerHTML = '';
             stat.pushed = 0; stat.failed = 0;
@@ -659,6 +944,8 @@
             '  </label>',
             '  <label class="h1dl-row">重命名规则<input id="h1dl-tpl"></label>',
             '  <div class="h1dl-hint">占位符：{title} 标题 · {author} 作者 · {id} 视频ID · {quality} 画质 · {date} 日期 · {index} 序号<br>用 <b>/</b> 分隔可自动创建子目录，如：{author} / {title} [{quality}]</div>',
+            '  <label class="h1dl-row"><span class="h1dl-chk"><input type="checkbox" id="h1dl-meta"> 导出 NFO 与封面元数据（Beta）</span></label>',
+            '  <div class="h1dl-hint">每个视频生成 <b>同名 .nfo</b>（标题/作者/标签/点赞/简介/日期）与 <b>-poster.jpg 封面</b>、<b>-banner.jpg 横幅</b>，统一打包进 zip，批量完成后自动下载，解压整目录拖入下载目录即可。</div>',
             '  <div class="h1dl-btns">',
             '    <button id="h1dl-test" class="h1dl-btn-ghost">测试 aria2 连接</button>',
             '    <span style="flex:1"></span>',
@@ -678,6 +965,7 @@
         overlay.querySelector('#h1dl-throttle-sec').value = cfg.throttleSec || 5;
         overlay.querySelector('#h1dl-quality').value = cfg.quality;
         overlay.querySelector('#h1dl-tpl').value = cfg.renameTpl;
+        overlay.querySelector('#h1dl-meta').checked = !!cfg.exportMeta;
 
         overlay.querySelector('#h1dl-cancel').addEventListener('click', function () { overlay.remove(); });
 
@@ -700,6 +988,7 @@
             cfg.throttleSec = Math.max(1, parseInt(overlay.querySelector('#h1dl-throttle-sec').value, 10) || 5);
             cfg.quality = overlay.querySelector('#h1dl-quality').value;
             cfg.renameTpl = overlay.querySelector('#h1dl-tpl').value.trim() || DEFAULT_CONFIG.renameTpl;
+            cfg.exportMeta = overlay.querySelector('#h1dl-meta').checked;
             saveCfg();
             overlay.remove();
             toast('设置已保存');
@@ -712,55 +1001,89 @@
 
     var CHECK_ATTR = 'data-h1dl-checked';
 
-    function injectCheckboxes() {
-        var cards = document.querySelectorAll('.video-item-container');
-        for (var i = 0; i < cards.length; i++) {
-            var card = cards[i];
-            if (card.querySelector('.h1dl-check')) continue;
-            var link = card.querySelector('a.video-link[href*="/watch?v="]');
-            if (!link) continue;
+    // 找到某视频链接对应的「卡片容器」（用于放勾选框 + 记录勾选状态）
+    function findCardContainer(a) {
+        return a.closest('.video-item-container') ||
+               a.closest('.playlist-video-card') ||
+               (a.querySelector('.video-card-inner') ? a : null) ||
+               a;
+    }
 
-            var cb = document.createElement('div');
-            cb.className = 'h1dl-check';
-            cb.innerHTML = '<input type="checkbox">';
-            cb.title = '勾选加入批量下载';
-            var input = cb.querySelector('input');
-            input.addEventListener('click', function (e) { e.stopPropagation(); });
-            input.addEventListener('change', function () {
-                this.closest('.video-item-container').setAttribute(CHECK_ATTR, this.checked ? '1' : '0');
-                this.closest('.h1dl-check').classList.toggle('h1dl-checked', this.checked);
-                updateToolbarCount();
-            });
-            cb.addEventListener('click', function (e) {
-                e.preventDefault();
-                e.stopPropagation();
-                var inp = this.querySelector('input');
-                inp.checked = !inp.checked;
-                inp.dispatchEvent(new Event('change'));
-            });
-            var thumb = card.querySelector('.thumb-container') || link;
-            thumb.style.position = 'relative';
-            thumb.insertBefore(cb, thumb.firstChild);
+    // 从卡片容器里取视频链接（兼容各类结构）
+    function findCardLink(card) {
+        if (card.matches && card.matches('a[href*="/watch?v="]')) return card;
+        return card.querySelector('a.video-link[href*="/watch?v="]') ||
+               card.querySelector('.thumb-container a[href*="/watch?v="]') ||
+               card.querySelector('.video-title a[href*="/watch?v="]') ||
+               card.querySelector('a[href*="/watch?v="]');
+    }
+
+    function injectCheckboxes() {
+        // 遍历所有 watch 链接（按 ID 去重），为其卡片容器注入勾选框
+        var seen = {};
+        var links = document.querySelectorAll('a[href*="/watch?v="]');
+        for (var i = 0; i < links.length; i++) {
+            (function (link) {
+                var vm = link.href.match(/[?&]v=(\d+)/);
+                if (!vm || seen[vm[1]]) return;
+                var card = findCardContainer(link);
+                if (card && card.querySelector && card.querySelector('.h1dl-check')) return;
+                if (!card) return;
+                seen[vm[1]] = 1;
+
+                var cb = document.createElement('div');
+                cb.className = 'h1dl-check';
+                cb.innerHTML = '<input type="checkbox">';
+                cb.title = '勾选加入批量下载';
+                var input = cb.querySelector('input');
+                input.addEventListener('click', function (e) { e.stopPropagation(); });
+                input.addEventListener('change', function () {
+                    // 用闭包捕获的 card（注入时的卡片容器），避免 closest 误匹配到勾选框自身
+                    if (card && card.setAttribute) card.setAttribute(CHECK_ATTR, this.checked ? '1' : '0');
+                    cb.classList.toggle('h1dl-checked', this.checked);
+                    updateToolbarCount();
+                });
+                cb.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    var inp = this.querySelector('input');
+                    inp.checked = !inp.checked;
+                    inp.dispatchEvent(new Event('change'));
+                });
+
+                // 找到放勾选框的位置（封面图/缩略图容器）
+                var host = card.querySelector('.thumb-container') ||
+                           card.querySelector('.video-card-inner') ||
+                           card.querySelector('img') ||
+                           link;
+                if (host && host.style) host.style.position = 'relative';
+                host.insertBefore(cb, host.firstChild);
+            })(links[i]);
         }
     }
 
     function getCheckedItems() {
         var out = [];
-        document.querySelectorAll('.video-item-container[' + CHECK_ATTR + '="1"]').forEach(function (card) {
-            var a = card.querySelector('a.video-link[href*="/watch?v="]');
+        document.querySelectorAll('[' + CHECK_ATTR + '="1"]').forEach(function (card) {
+            var a = findCardLink(card);
             if (!a) return;
             var vm = a.href.match(/[?&]v=(\d+)/);
-            out.push({
-                url: a.href,
-                id: vm ? vm[1] : '',
-                title: (card.getAttribute('title') || '').trim()
-            });
+            var title = (card.getAttribute('title') || '').trim() ||
+                (card.querySelector('.video-title') ? card.querySelector('.video-title').textContent.trim() : '') ||
+                (card.querySelector('.home-rows-videos-title') ? card.querySelector('.home-rows-videos-title').textContent.trim() : '') ||
+                (a.querySelector('.home-rows-videos-title') ? a.querySelector('.home-rows-videos-title').textContent.trim() : '');
+            // 竖屏封面（image/cover/{id}.jpg）
+            var cover = '';
+            var img = card.querySelector('img[src*="image/cover/"]') ||
+                      (a.querySelector && a.querySelector('img[src*="image/cover/"]'));
+            if (img) cover = img.src;
+            out.push({ url: a.href, id: vm ? vm[1] : '', title: title, cover: cover });
         });
         return out;
     }
 
     function selectAll(checked) {
-        document.querySelectorAll('.video-item-container .h1dl-check input').forEach(function (inp) {
+        document.querySelectorAll('.h1dl-check input').forEach(function (inp) {
             inp.checked = checked;
             inp.dispatchEvent(new Event('change'));
         });
@@ -823,7 +1146,10 @@
             title: titleEl.textContent.trim(),
             author: '',
             date: '',
-            sources: {}
+            plot: '',
+            sources: {},
+            tags: [],
+            likePct: 0
         };
         var artistEl = document.getElementById('video-artist-name');
         if (artistEl) info.author = artistEl.textContent.trim();
@@ -832,10 +1158,28 @@
             var dm = metaEl.textContent.match(/(\d{4}-\d{2}-\d{2})/);
             if (dm) info.date = dm[1];
         }
+        // 简介
+        var plotEl = document.querySelector('.video-caption-text');
+        if (plotEl) info.plot = plotEl.textContent.replace(/\s+/g, ' ').trim();
         document.querySelectorAll('video source[src*=".mp4"]').forEach(function (s) {
             var qm = s.src.match(/-(\d{3,4})p\.mp4/);
             if (qm && !info.sources[qm[1] + 'p']) info.sources[qm[1] + 'p'] = s.src;
         });
+        // 横幅（横屏 banner）：og:image 用 {id}h.jpg（1024×576 高清横版）
+        // 竖屏封面 image/cover/{id}.jpg 在视频页不存在，播放页单视频下载时无封面（仅横幅）
+        var ogImg = document.querySelector('meta[property="og:image"]');
+        if (ogImg && ogImg.content) info.banner = ogImg.content;
+        // 标签（只取指向 /search 的真实标签链接，过滤 add/remove 等 UI 按钮）
+        document.querySelectorAll('.single-video-tag a[href*="/search"]').forEach(function (a) {
+            var t = a.textContent.replace(/^#/, '').replace(/\(\d+\)\s*$/, '').trim();
+            if (t && !/^(add|remove|like|dislike)$/i.test(t) && info.tags.indexOf(t) < 0) info.tags.push(t);
+        });
+        // 点赞百分比：主视频点赞按钮内 thumb_up 图标后的百分比
+        var likeEl = document.querySelector('.video-like-btn');
+        if (likeEl) {
+            var lm = likeEl.textContent.match(/thumb_up\s*(\d{1,3})\s*%/);
+            if (lm) info.likePct = parseInt(lm[1], 10);
+        }
 
         var qualities = Object.keys(info.sources).sort(function (a, b) { return parseInt(b) - parseInt(a); });
         if (!qualities.length) {
@@ -933,6 +1277,73 @@
         p.querySelector('#h1dl-up-cfg').addEventListener('click', openSettings);
     }
 
+    // 系列列表页（playlist）显示批量下载按钮（支持翻页收集整个系列）
+    function injectPlaylistPanel() {
+        if (!isPlaylistPage() || document.getElementById('h1dl-playlist-panel')) return;
+        var p = document.createElement('div');
+        p.id = 'h1dl-playlist-panel';
+        p.innerHTML =
+            '<button id="h1dl-pl-all" class="h1dl-btn-main">⬇ 批量下载本系列全部</button>' +
+            '<button id="h1dl-pl-page" class="h1dl-btn-ghost">⬇ 下载本页视频</button>' +
+            '<button id="h1dl-pl-cfg" class="h1dl-btn-ghost">⚙ 设置</button>';
+        var container = document.querySelector('.playlist-video-card, .video-item-container');
+        if (!container || !container.parentNode) return;
+        container.parentNode.insertBefore(p, container);
+        p.querySelector('#h1dl-pl-page').addEventListener('click', function () {
+            var items = collectPageVideos(document);
+            if (!items.length) { toast('本页未找到视频'); return; }
+            startBatch(items);
+        });
+        p.querySelector('#h1dl-pl-all').addEventListener('click', function () {
+            downloadCurrentPlaylist();
+        });
+        p.querySelector('#h1dl-pl-cfg').addEventListener('click', openSettings);
+    }
+
+    // 收集当前系列（playlist）全部视频：自动翻页（?page=N），去重后入队
+    function downloadCurrentPlaylist() {
+        var lm = location.pathname.match(/\/playlist(?:\?|$)/) ? location.href : '';
+        var listId = (location.href.match(/[?&]list=(\d+)/) || [])[1] || '';
+        if (!listId) { toast('未识别到系列 ID'); return; }
+        // 构造翻页基 URL（保留 list 参数，去掉 page）
+        var base = SITE + '/playlist?list=' + listId + '&sort=latest';
+        saveQueue({ phase: 'collectList', base: base, page: 1, seen: {}, items: [] });
+        continueListCollect();
+    }
+
+    // 执行/续传「系列视频收集」队列（翻页收集整个 playlist）
+    function continueListCollect() {
+        var q = loadQueue();
+        if (!q || q.phase !== 'collectList') return;
+        log('开始获取系列全部视频: ' + q.base);
+        toast('正在获取系列视频列表…');
+        function step() {
+            var url = q.base + '&page=' + q.page;
+            return gmFetch(url).then(function (html) {
+                var doc = new DOMParser().parseFromString(html, 'text/html');
+                var videos = collectPageVideos(doc);
+                var fresh = 0;
+                videos.forEach(function (v) {
+                    if (!q.seen[v.id]) { q.seen[v.id] = 1; q.items.push(v); fresh++; }
+                });
+                saveQueue(q);
+                log('系列第 ' + q.page + ' 页: ' + videos.length + ' 个视频' + (fresh < videos.length ? '（无新增，停止）' : ''));
+                if (fresh === 0 || videos.length === 0 || q.page >= MAX_AUTHOR_PAGES) return q.items;
+                q.page++;
+                var next = step();
+                return cfg.throttle ? delay(cfg.throttleSec * 1000).then(function () { return next; }) : next;
+            });
+        }
+        step().then(function (items) {
+            if (!items.length) { clearQueue(); toast('该系列没有可下载的视频'); return; }
+            if (!confirm('该系列共 ' + items.length + ' 个视频，全部加入下载队列？')) { clearQueue(); return; }
+            startBatch(items);
+        }).catch(function (e) {
+            log('✗ 获取系列视频失败: ' + e.message + '（进度已保留，稍后自动重试）', true);
+            toast('获取系列视频失败，稍后自动重试');
+        });
+    }
+
     /* ================================================================
      *  样式
      * ================================================================ */
@@ -957,8 +1368,8 @@
             '.h1dl-check input{width:16px;height:16px;cursor:pointer;margin:0;accent-color:#e04a6f;}',
             '.h1dl-check.h1dl-checked{background:rgba(224,74,111,.85);border-color:#e04a6f;}',
 
-            '#h1dl-watch-panel,#h1dl-user-panel{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0;padding:10px;background:rgba(30,30,40,.6);border:1px solid rgba(255,255,255,.12);border-radius:10px;}',
-            '#h1dl-watch-panel select,#h1dl-user-panel select{background:#2a2a35;color:#eee;border:1px solid #555;border-radius:6px;padding:5px 8px;}',
+            '#h1dl-watch-panel,#h1dl-user-panel,#h1dl-playlist-panel{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0;padding:10px;background:rgba(30,30,40,.6);border:1px solid rgba(255,255,255,.12);border-radius:10px;}',
+            '#h1dl-watch-panel select,#h1dl-user-panel select,#h1dl-playlist-panel select{background:#2a2a35;color:#eee;border:1px solid #555;border-radius:6px;padding:5px 8px;}',
             '.h1dl-wp-label{color:#ccc;font-size:13px;}',
             '.h1dl-warn{color:#ffb84d;font-size:13px;}',
 
@@ -974,6 +1385,8 @@
             '#h1dl-log .h1dl-log-clear,#h1dl-log .h1dl-log-toggle{cursor:pointer;color:#888;font-weight:normal;}',
             '#h1dl-log .h1dl-log-stop{cursor:pointer;color:#ff9b7b;font-weight:normal;}',
             '#h1dl-log .h1dl-log-stop:hover{color:#ff7b5b;}',
+            '#h1dl-log .h1dl-log-zip{cursor:pointer;color:#7bffa0;font-weight:normal;}',
+            '#h1dl-log .h1dl-log-zip:hover{color:#a0ffc0;}',
             '#h1dl-log .h1dl-log-clear:hover,#h1dl-log .h1dl-log-toggle:hover{color:#ccc;}',
             '#h1dl-log .h1dl-log-body{max-height:200px;overflow-y:auto;padding:6px 10px;color:#888;line-height:1.6;}',
             '#h1dl-log .h1dl-log-line.h1dl-ok{color:#7bffa0;font-weight:bold;}',
@@ -1028,6 +1441,7 @@
             }
             injectWatchPanel();
             injectUserPagePanel();
+            injectPlaylistPanel();
         }
         injectAll();
 
