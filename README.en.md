@@ -4,6 +4,8 @@
 
 > A Tampermonkey userscript for batch downloading videos from [hanime1.me](https://hanime1.me/) (v1.3.0). Supports aria2 RPC, full author/series download, custom rename rules, cross-page resume, and Kodi/Emby/Jellyfin/Plex-compatible NFO metadata export.
 
+**📦 One-click install:** [Install on Greasy Fork](https://greasyfork.org/zh-CN/scripts/592408-hanime1-me-%E6%89%B9%E9%87%8F%E4%B8%8B%E8%BD%BD%E5%B7%A5%E5%85%B7-batch-downloader)
+
 ---
 
 ## Features
@@ -26,7 +28,7 @@
 ## Installation
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/)
-2. Import `hanime1-batch-downloader.user.js` (Dashboard → Utilities → Import from file; or paste into a new script)
+2. Install from [Greasy Fork](https://greasyfork.org/zh-CN/scripts/592408-hanime1-me-%E6%89%B9%E9%87%8F%E4%B8%8B%E8%BD%BD%E5%B7%A5%E5%85%B7-batch-downloader); or import `hanime1-batch-downloader.user.js` (Dashboard → Utilities → Import from file; or paste into a new script)
 3. Open https://hanime1.me/ — a red "Download Tool" rail appears at the right edge; hover it to open the panel
 
 ---

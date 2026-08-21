@@ -4,6 +4,8 @@
 
 > 用于 [hanime1.me](https://hanime1.me/) 视频批量下载的油猴脚本（v1.3.0）。支持 aria2 RPC、作者/系列全量下载、自定义重命名、跨页续传、Kodi/Emby/Jellyfin/Plex 兼容 NFO 元数据导出。
 
+**📦 一键安装：**[Greasy Fork 安装](https://greasyfork.org/zh-CN/scripts/592408-hanime1-me-%E6%89%B9%E9%87%8F%E4%B8%8B%E8%BD%BD%E5%B7%A5%E5%85%B7-batch-downloader)
+
 ---
 
 ## 功能
@@ -26,7 +28,7 @@
 ## 安装
 
 1. 浏览器安装 [Tampermonkey](https://www.tampermonkey.net/)
-2. 导入 `hanime1-batch-downloader.user.js`（Tampermonkey → 管理面板 → 实用工具 → 导入文件；或新建脚本粘贴全部内容）
+2. 从 [Greasy Fork](https://greasyfork.org/zh-CN/scripts/592408-hanime1-me-%E6%89%B9%E9%87%8F%E4%B8%8B%E8%BD%BD%E5%B7%A5%E5%85%B7-batch-downloader) 一键安装；或导入 `hanime1-batch-downloader.user.js`（Tampermonkey → 管理面板 → 实用工具 → 导入文件；或新建脚本粘贴全部内容）
 3. 打开 https://hanime1.me/ ，屏幕**右缘出现红色「下载工具」竖条**即安装成功，鼠标移上去弹出工具面板
 
 ---
