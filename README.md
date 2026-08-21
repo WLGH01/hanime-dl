@@ -6,6 +6,8 @@
 
 **📦 一键安装：**[Greasy Fork 安装](https://greasyfork.org/zh-CN/scripts/592408-hanime1-me-%E6%89%B9%E9%87%8F%E4%B8%8B%E8%BD%BD%E5%B7%A5%E5%85%B7-batch-downloader)
 
+> ⚠️ 本脚本针对成人站点，Greasy Fork 已将其标记为「成人内容」——**需要登录 Greasy Fork 账号并在账号设置中开启「显示成人内容」**，才能看到并安装。若不便登录，可直接从本仓库导入 `hanime1-batch-downloader.user.js`（见下方「安装」）。
+
 ---
 
 ## 功能
@@ -30,6 +32,8 @@
 1. 浏览器安装 [Tampermonkey](https://www.tampermonkey.net/)
 2. 从 [Greasy Fork](https://greasyfork.org/zh-CN/scripts/592408-hanime1-me-%E6%89%B9%E9%87%8F%E4%B8%8B%E8%BD%BD%E5%B7%A5%E5%85%B7-batch-downloader) 一键安装；或导入 `hanime1-batch-downloader.user.js`（Tampermonkey → 管理面板 → 实用工具 → 导入文件；或新建脚本粘贴全部内容）
 3. 打开 https://hanime1.me/ ，屏幕**右缘出现红色「下载工具」竖条**即安装成功，鼠标移上去弹出工具面板
+
+> 提示：Greasy Fork 上该脚本被标记为成人内容，需登录账号并在「账号设置 → 显示成人内容」勾选后才能访问；不方便的话直接用第 2 步的「导入文件」方式安装，效果完全相同。
 
 ---
 

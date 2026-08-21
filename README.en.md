@@ -6,6 +6,8 @@
 
 **📦 One-click install:** [Install on Greasy Fork](https://greasyfork.org/zh-CN/scripts/592408-hanime1-me-%E6%89%B9%E9%87%8F%E4%B8%8B%E8%BD%BD%E5%B7%A5%E5%85%B7-batch-downloader)
 
+> ⚠️ This script targets an adult site and is marked "adult content" on Greasy Fork — you must **log in and enable "Show adult content" in account settings** to view and install it. If you prefer not to log in, import `hanime1-batch-downloader.user.js` directly from this repo (see Installation below).
+
 ---
 
 ## Features
@@ -30,6 +32,8 @@
 1. Install [Tampermonkey](https://www.tampermonkey.net/)
 2. Install from [Greasy Fork](https://greasyfork.org/zh-CN/scripts/592408-hanime1-me-%E6%89%B9%E9%87%8F%E4%B8%8B%E8%BD%BD%E5%B7%A5%E5%85%B7-batch-downloader); or import `hanime1-batch-downloader.user.js` (Dashboard → Utilities → Import from file; or paste into a new script)
 3. Open https://hanime1.me/ — a red "Download Tool" rail appears at the right edge; hover it to open the panel
+
+> Note: this script is marked adult content on Greasy Fork, so you need to log in and enable "Show adult content" in account settings. Alternatively, use the "Import from file" method in step 2 — the result is identical.
 
 ---
 
