@@ -144,6 +144,32 @@ The following media managers can also read/write this format for further editing
 
 ---
 
+## Security
+
+The script has been reviewed and has **no high-risk vulnerabilities**. Key safety features and points to be aware of:
+
+**✅ Safe by design**
+
+| Aspect | Description |
+|---|---|
+| No remote code execution | No `eval` / `new Function` / dynamically loaded external scripts; site data cannot inject code |
+| No credential leakage | Cross-origin requests use `GM_xmlhttpRequest` (no cookies), so your hanime1 session is never sent to third parties |
+| Local-only config | Secret/proxy settings are stored via `GM_setValue` **in your own browser**; the source has no hardcoded secrets or personal paths (default secret is empty) |
+| Filename sanitization | `\ / : * ? " < > |` and control characters in titles/author names are replaced, preventing path traversal |
+| Controlled download sources | Video/image URLs only come from hanime1 or `vdownload.hembed.com` |
+
+**⚠️ Points to be aware of**
+
+| Item | Description |
+|---|---|
+| `@connect *` is broad | The metadata declares a wildcard `@connect`, though it only actually accesses hanime1, `vdownload.hembed.com`, and local aria2 (`127.0.0.1`). Kept for custom aria2 addresses; risk is minimal, but you can narrow it manually if concerned |
+| aria2 secret stored in plaintext | The secret is stored in plaintext in browser local storage, readable only locally. If your machine is shared, consider using no secret or a dedicated token |
+| Self-hosted aria2 | The script only parses and pushes tasks; downloading is done by your own aria2 — nothing passes through a third-party server |
+
+> Conclusion: normal risk level for a user-initiated download tool — safe to use.
+
+---
+
 ## FAQ
 
 - **aria2 connection failed**: ensure aria2c is running and the URL/secret are correct (default port 6800)
