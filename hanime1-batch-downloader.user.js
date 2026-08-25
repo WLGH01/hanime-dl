@@ -50,7 +50,7 @@
         throttleSec: 5,                                 // 限速时每个任务的间隔秒数
         exportMeta: true,                               // 导出封面 + Emby 兼容 NFO 元数据（作者/标签/点赞百分比）
         showExperimental: false,                        // 显示实验性功能（MediaCenter API 推送）配置区块
-        mediaCenter: false,                             // 实验性：推送到 MediaCenter API（开启后仅用此方式，替代 aria2/浏览器下载）
+        mediaCenter: false,                             // 实验性：配合 aria2 下载完成后自动登记到 MediaCenter（浏览器下载不可用）
         mediaCenterBase: 'http://127.0.0.1:3000/api',   // MediaCenter API 基础地址
         mediaCenterToken: ''                            // MediaCenter .env 的 API_TOKEN（静态服务令牌）
     };
@@ -1118,6 +1118,7 @@
             '    <label class="h1dl-row">MediaCenter API 地址<input id="h1dl-mc-base" placeholder="http://127.0.0.1:3000/api"></label>',
             '    <label class="h1dl-row">API 令牌（MediaCenter 的 API_TOKEN）<input id="h1dl-mc-token" placeholder="静态服务令牌，留空无法通过鉴权"></label>',
             '    <div class="h1dl-hint">开启后流程：直链推给 <b>aria2</b> 下载（「保存目录」须为 MediaCenter 可访问的<b>服务器路径</b>，aria2 与 MediaCenter 需同机或共享存储）→ 下载完成后自动 <b>POST /media</b> 登记本地路径 + <b>PUT /media/:id</b> 补全标题/作者/标签/简介。</div>',
+            '    <div class="h1dl-btns"><button id="h1dl-test-mc" class="h1dl-btn-ghost">测试 MediaCenter 连接</button></div>',
             '  </div>',
             '  <div class="h1dl-btns">',
             '    <button id="h1dl-test" class="h1dl-btn-ghost">测试 aria2 连接</button>',
@@ -1153,32 +1154,27 @@
         overlay.querySelector('#h1dl-exp-show').addEventListener('change', refreshExpState);
         refreshExpState();
 
-        // 实验性开关联动：开启后把「测试」按钮切到 MediaCenter（aria2 控件保持可用，因为要靠 aria2 下载）
-        function refreshMcState() {
-            var on = overlay.querySelector('#h1dl-mc').checked;
-            var testBtn = overlay.querySelector('#h1dl-test');
-            if (testBtn) testBtn.textContent = on ? '测试 MediaCenter 连接' : '测试 aria2 连接';
-        }
-        overlay.querySelector('#h1dl-mc').addEventListener('change', refreshMcState);
-        refreshMcState();
+        // 实验性模式下 aria2 控件保持可用（下载要靠 aria2），测试按钮各自独立：
+        // 「测试 aria2 连接」始终测 aria2，「测试 MediaCenter 连接」测 MediaCenter
 
         overlay.querySelector('#h1dl-cancel').addEventListener('click', function () { overlay.remove(); });
 
         overlay.querySelector('#h1dl-test').addEventListener('click', function () {
-            // 实验性模式下测试 MediaCenter，否则测试 aria2（均用输入框当前值，不落盘）
-            if (overlay.querySelector('#h1dl-mc').checked) {
-                var mcBase = overlay.querySelector('#h1dl-mc-base').value.trim() || DEFAULT_CONFIG.mediaCenterBase;
-                var mcToken = overlay.querySelector('#h1dl-mc-token').value.trim();
-                testMediaCenter(mcBase, mcToken)
-                    .then(function () { toast('MediaCenter 连接成功'); })
-                    .catch(function (e) { toast('MediaCenter 连接失败: ' + e.message); });
-                return;
-            }
+            // 用输入框当前值测试 aria2，不落盘
             var rpcUrl = overlay.querySelector('#h1dl-rpc').value.trim() || DEFAULT_CONFIG.aria2Rpc;
             var secret = overlay.querySelector('#h1dl-secret').value.trim();
             aria2Rpc('aria2.getVersion', ['token:' + secret], rpcUrl)
                 .then(function (v) { toast('aria2 连接成功，版本: ' + v.version); })
                 .catch(function (e) { toast('aria2 连接失败: ' + e.message); });
+        });
+
+        overlay.querySelector('#h1dl-test-mc').addEventListener('click', function () {
+            // 用输入框当前值测试 MediaCenter，不落盘
+            var mcBase = overlay.querySelector('#h1dl-mc-base').value.trim() || DEFAULT_CONFIG.mediaCenterBase;
+            var mcToken = overlay.querySelector('#h1dl-mc-token').value.trim();
+            testMediaCenter(mcBase, mcToken)
+                .then(function () { toast('MediaCenter 连接成功'); })
+                .catch(function (e) { toast('MediaCenter 连接失败: ' + e.message); });
         });
 
         overlay.querySelector('#h1dl-save').addEventListener('click', function () {
