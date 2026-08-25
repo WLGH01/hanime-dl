@@ -202,9 +202,12 @@
     }
 
     /* ================================================================
-     *  MediaCenter API 推送（实验性）
+     *  MediaCenter 登记（实验性，配合 aria2）
+     *  MediaCenter 的 POST /media 只登记「服务器本地已存在的文件」，不下载远程 URL，
+     *  因此流程：aria2 下载到服务器路径 → 完成后登记本地路径 + 元数据。
      *  契约（docs/API.md）：
-     *    POST {base}/media  —— 创建媒体记录（仅管理员），filePath 传视频直链，
+     *    GET  {base}/media?filePath=… —— 按服务器路径查重（仅管理员）
+     *    POST {base}/media —— 创建媒体记录（仅管理员），filePath=本地路径，
      *                           mimeType=video/mp4，sourceMeta=完整元数据 JSON
      *    PUT  {base}/media/:id —— 补全标题/简介/作者/标签/来源
      *  鉴权：Authorization: Bearer <MediaCenter 的 API_TOKEN>（静态服务令牌）
@@ -260,40 +263,80 @@
         };
     }
 
-    // 推送到 MediaCenter：POST /media 建记录 → PUT /media/:id 补全元数据
-    // 注意：当前 MediaCenter 仓库版本的 POST /media 会对 filePath 做本地 ffprobe 探测，
-    // 需在 MediaCenter 端扩展「检测到 http(s) filePath 则跳过本地探测、由服务端下载后再探测」。
-    function pushToMediaCenter(info, picked) {
+    // 轮询 aria2 任务直到完成/失败（默认最长等 12 小时；页面被销毁后队列跨页续传兜底）
+    function waitAria2Complete(gid, timeoutMs) {
+        var deadline = Date.now() + (timeoutMs || 12 * 3600 * 1000);
+        return new Promise(function (resolve, reject) {
+            function poll() {
+                aria2Rpc('aria2.tellStatus', ['token:' + cfg.aria2Secret, gid]).then(function (st) {
+                    if (st.status === 'complete') resolve(st);
+                    else if (st.status === 'error' || st.status === 'removed') {
+                        reject(new Error('aria2 下载失败: ' + (st.errorMessage || st.status)));
+                    } else if (Date.now() > deadline) {
+                        reject(new Error('等待 aria2 下载超时（12h），可稍后「继续批量任务」自动重试'));
+                    } else {
+                        setTimeout(poll, 3000);
+                    }
+                }).catch(reject);
+            }
+            poll();
+        });
+    }
+
+    // 实验性：aria2 下载到服务器路径 → 下载完成后把本地路径 + 元数据登记到 MediaCenter
+    // 前提：aria2 与 MediaCenter 在同一台机器（或共享存储）；「保存目录」须为 MediaCenter 可访问的服务器路径。
+    // 流程：aria2.addUri → 轮询 complete → GET /media?filePath= 查重 → POST /media 登记 → PUT /media/:id 补全元数据
+    function downloadAndPushToMediaCenter(info, picked, target) {
         var base = (cfg.mediaCenterBase || '').replace(/\/+$/, '');
         if (!base) return Promise.reject(new Error('未配置 MediaCenter API 地址'));
+        var options = buildAria2Options(target);
+        if (!options.dir) return Promise.reject(new Error('MediaCenter 模式需要配置「保存目录」（aria2 下载到服务器路径）'));
+        var filePath = options.dir.replace(/\/+$/, '') + '/' + target.filename;
         var payload = buildMcPayload(info, picked);
         var sourceMeta = JSON.stringify(payload);
-        return mcRequest(base + '/media', {
-            method: 'POST',
-            data: {
-                filePath: picked.url,
-                mimeType: 'video/mp4',
-                sourceMeta: sourceMeta
-            },
-            timeout: 60000      // POST 时服务端可能对直链做探测，给足时间
-        }).then(function (res) {
-            var id = res.body && res.body.id;
-            if (!id) throw new Error('MediaCenter 未返回媒体 id');
+
+        return aria2Rpc('aria2.addUri', ['token:' + cfg.aria2Secret, [picked.url], options])
+            .then(function (gid) {
+                log('⏳ aria2 开始下载: ' + target.display + '（gid=' + gid + '），完成后自动登记 MediaCenter');
+                return waitAria2Complete(gid);
+            })
+            // 查重：已登记过相同服务器路径则跳过 POST，只更新元数据
+            .then(function () {
+                return mcRequest(base + '/media?filePath=' + encodeURIComponent(filePath) + '&limit=1', { timeout: 20000 });
+            })
+            .then(function (res) {
+                var items = (res.body && res.body.items) || [];
+                if (items.length) return { id: items[0].id, exists: true };
+                return mcRequest(base + '/media', {
+                    method: 'POST',
+                    data: {
+                        filePath: filePath,
+                        mimeType: 'video/mp4',
+                        sourceMeta: sourceMeta
+                    },
+                    timeout: 60000      // 服务端会对本地文件做 ffprobe 探测
+                }).then(function (r2) {
+                    var id = r2.body && r2.body.id;
+                    if (!id) throw new Error('MediaCenter 未返回媒体 id');
+                    return { id: id, exists: false };
+                });
+            })
             // 补全元数据（标题/简介/作者/标签/来源）；tags 恒为数组，避免命中 media.noUpdate
-            return mcRequest(base + '/media/' + id, {
-                method: 'PUT',
-                data: {
-                    title: info.title || undefined,
-                    description: info.plot || '',
-                    author: info.author || undefined,
-                    tags: info.tags || [],
-                    source: 'hanime1',
-                    sourceMeta: sourceMeta
-                }
-            }).then(function () {
-                return { id: id, title: info.title || '' };
+            .then(function (r) {
+                return mcRequest(base + '/media/' + r.id, {
+                    method: 'PUT',
+                    data: {
+                        title: info.title || undefined,
+                        description: info.plot || '',
+                        author: info.author || undefined,
+                        tags: info.tags || [],
+                        source: 'hanime1',
+                        sourceMeta: sourceMeta
+                    }
+                }).then(function () {
+                    return { id: r.id, title: info.title || '', exists: r.exists };
+                });
             });
-        });
     }
 
     /* ================================================================
@@ -653,6 +696,30 @@
         }
     }
 
+    // 构建 aria2 addUri 选项（普通下载与「下载后登记 MediaCenter」共用）
+    function buildAria2Options(target) {
+        var options = {
+            out: target.filename,
+            'max-connection-per-server': '8',
+            split: '8',
+            'min-split-size': '10M',
+            'allow-overwrite': cfg.overwrite ? 'true' : 'false',
+            'auto-file-renaming': 'false',
+            'continue': 'true',
+            header: [
+                'Referer: ' + SITE + '/',
+                'User-Agent: ' + UA
+            ]
+        };
+        // 重命名模板中的 / 会拼入保存目录（aria2 自动创建不存在的目录）
+        var dirParts = [];
+        if (cfg.aria2Dir) dirParts.push(cfg.aria2Dir.replace(/[\/\\]+$/, ''));
+        if (target.subDir) dirParts.push(target.subDir);
+        if (dirParts.length) options.dir = dirParts.join('/');
+        if (cfg.proxy) options['all-proxy'] = cfg.proxy;   // http:// 或 socks5:// 均支持
+        return options;
+    }
+
     function downloadOne(info, index) {
         var picked = pickSource(info);
         if (!picked) {
@@ -663,39 +730,21 @@
         info.quality = picked.quality;
         var target = buildFileTarget(info, index);
 
-        // 实验性：MediaCenter API 推送模式（开启后替代 aria2 / 浏览器下载）
+        // 实验性：MediaCenter 登记模式 —— aria2 下载到服务器路径，完成后自动登记（配合 aria2 使用）
         if (cfg.mediaCenter) {
-            return pushToMediaCenter(info, picked).then(function (r) {
-                log('✓ 已推送到 MediaCenter: ' + (r.title || target.display) + ' (' + picked.quality + ', id=' + r.id + ')', 'ok');
+            return downloadAndPushToMediaCenter(info, picked, target).then(function (r) {
+                log('✓ 已下载并登记 MediaCenter: ' + (r.title || target.display) + ' (' + picked.quality + ', id=' + r.id + (r.exists ? '，记录已存在，仅更新元数据' : '') + ')', 'ok');
                 statPushed();
                 return true;
             }).catch(function (e) {
-                log('✗ MediaCenter 推送失败 ' + target.display + ' — ' + e.message, true);
+                log('✗ MediaCenter 登记失败 ' + target.display + ' — ' + e.message, true);
                 statFailed();
                 return false;
             });
         }
 
         if (cfg.mode === 'aria2') {
-            var options = {
-                out: target.filename,
-                'max-connection-per-server': '8',
-                split: '8',
-                'min-split-size': '10M',
-                'allow-overwrite': cfg.overwrite ? 'true' : 'false',
-                'auto-file-renaming': 'false',
-                'continue': 'true',
-                header: [
-                    'Referer: ' + SITE + '/',
-                    'User-Agent: ' + UA
-                ]
-            };
-            // 重命名模板中的 / 会拼入保存目录（aria2 自动创建不存在的目录）
-            var dirParts = [];
-            if (cfg.aria2Dir) dirParts.push(cfg.aria2Dir.replace(/[\/\\]+$/, ''));
-            if (target.subDir) dirParts.push(target.subDir);
-            if (dirParts.length) options.dir = dirParts.join('/');
-            if (cfg.proxy) options['all-proxy'] = cfg.proxy;   // http:// 或 socks5:// 均支持
+            var options = buildAria2Options(target);
 
             return aria2Rpc('aria2.addUri', ['token:' + cfg.aria2Secret, [picked.url], options]).then(function () {
                 log('✓ 已推送至 aria2: ' + target.display + ' (' + picked.quality + ')', 'ok');
@@ -1064,11 +1113,11 @@
             '  <div class="h1dl-hint">每个视频生成 <b>同名 .nfo</b>（标题/作者/标签/点赞/简介/日期）与 <b>-poster.jpg 封面</b>、<b>-banner.jpg 横幅</b>，统一打包进 zip，批量完成后自动下载，解压整目录拖入下载目录即可。</div>',
             '  <label class="h1dl-row"><span class="h1dl-chk"><input type="checkbox" id="h1dl-exp-show"> 显示实验性功能</span></label>',
             '  <div id="h1dl-exp-block">',
-            '    <div class="h1dl-exp">实验性：MediaCenter API 推送</div>',
-            '    <label class="h1dl-row"><span class="h1dl-chk"><input type="checkbox" id="h1dl-mc"> 推送到 MediaCenter API（开启后仅用此方式，aria2 / 浏览器下载不可用）</span></label>',
+            '    <div class="h1dl-exp">实验性：MediaCenter 登记（配合 aria2）</div>',
+            '    <label class="h1dl-row"><span class="h1dl-chk"><input type="checkbox" id="h1dl-mc"> aria2 下载完成后自动登记到 MediaCenter（浏览器下载不可用）</span></label>',
             '    <label class="h1dl-row">MediaCenter API 地址<input id="h1dl-mc-base" placeholder="http://127.0.0.1:3000/api"></label>',
             '    <label class="h1dl-row">API 令牌（MediaCenter 的 API_TOKEN）<input id="h1dl-mc-token" placeholder="静态服务令牌，留空无法通过鉴权"></label>',
-            '    <div class="h1dl-hint">开启后每个视频调用 <b>POST /media</b> 推送直链（filePath）+ 元数据（sourceMeta），再用 <b>PUT /media/:id</b> 补全标题/作者/标签/简介。<br>⚠ 需 MediaCenter 端支持远程 URL 入库（当前仓库版本仅支持服务器本地路径，见 README）。</div>',
+            '    <div class="h1dl-hint">开启后流程：直链推给 <b>aria2</b> 下载（「保存目录」须为 MediaCenter 可访问的<b>服务器路径</b>，aria2 与 MediaCenter 需同机或共享存储）→ 下载完成后自动 <b>POST /media</b> 登记本地路径 + <b>PUT /media/:id</b> 补全标题/作者/标签/简介。</div>',
             '  </div>',
             '  <div class="h1dl-btns">',
             '    <button id="h1dl-test" class="h1dl-btn-ghost">测试 aria2 连接</button>',
@@ -1104,13 +1153,9 @@
         overlay.querySelector('#h1dl-exp-show').addEventListener('change', refreshExpState);
         refreshExpState();
 
-        // 实验性开关联动：开启后禁用下载方式与 aria2 相关控件（仅用 MediaCenter 推送）
+        // 实验性开关联动：开启后把「测试」按钮切到 MediaCenter（aria2 控件保持可用，因为要靠 aria2 下载）
         function refreshMcState() {
             var on = overlay.querySelector('#h1dl-mc').checked;
-            ['#h1dl-mode', '#h1dl-rpc', '#h1dl-secret', '#h1dl-dir', '#h1dl-proxy'].forEach(function (sel) {
-                var el = overlay.querySelector(sel);
-                if (el) el.disabled = on;
-            });
             var testBtn = overlay.querySelector('#h1dl-test');
             if (testBtn) testBtn.textContent = on ? '测试 MediaCenter 连接' : '测试 aria2 连接';
         }
@@ -1148,8 +1193,10 @@
             cfg.renameTpl = overlay.querySelector('#h1dl-tpl').value.trim() || DEFAULT_CONFIG.renameTpl;
             cfg.exportMeta = overlay.querySelector('#h1dl-meta').checked;
             cfg.showExperimental = overlay.querySelector('#h1dl-exp-show').checked;
-            // 隐藏实验性区块时强制关闭 MediaCenter 推送，避免「看不见却仍在生效」
+            // 隐藏实验性区块时强制关闭 MediaCenter 登记，避免「看不见却仍在生效」
             cfg.mediaCenter = overlay.querySelector('#h1dl-mc').checked && cfg.showExperimental;
+            // MediaCenter 登记模式依赖 aria2 下载，强制下载方式为 aria2
+            if (cfg.mediaCenter) cfg.mode = 'aria2';
             cfg.mediaCenterBase = overlay.querySelector('#h1dl-mc-base').value.trim() || DEFAULT_CONFIG.mediaCenterBase;
             cfg.mediaCenterToken = overlay.querySelector('#h1dl-mc-token').value.trim();
             saveCfg();

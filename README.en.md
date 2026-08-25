@@ -2,7 +2,7 @@
 
 ## [中文](./README.md) | English
 
-> A Tampermonkey userscript for batch downloading videos from [hanime1.me](https://hanime1.me/) (v1.4.0). Supports aria2 RPC, full author/series download, custom rename rules, cross-page resume, Kodi/Emby/Jellyfin/Plex-compatible NFO metadata export; experimental: push download links + metadata to a self-hosted MediaCenter API.
+> A Tampermonkey userscript for batch downloading videos from [hanime1.me](https://hanime1.me/) (v1.4.0). Supports aria2 RPC, full author/series download, custom rename rules, cross-page resume, Kodi/Emby/Jellyfin/Plex-compatible NFO metadata export; experimental: auto-register downloaded videos (local path + metadata) to a self-hosted MediaCenter after aria2 finishes.
 
 **📦 One-click install:** [Install on Greasy Fork](https://greasyfork.org/zh-CN/scripts/592408-hanime1-me-%E6%89%B9%E9%87%8F%E4%B8%8B%E8%BD%BD%E5%B7%A5%E5%85%B7-batch-downloader)
 
@@ -24,7 +24,7 @@
 | Cross-page resume | Progress persisted in real time; navigation doesn't interrupt |
 | Metadata export | Kodi-compatible NFO + vertical poster + horizontal banner, bundled as zip |
 | Push throttling | Serial push with interval to avoid rate limiting |
-| MediaCenter push (experimental) | Push download links + full metadata to your MediaCenter API; replaces aria2/browser download while enabled |
+| MediaCenter registration (experimental) | After aria2 downloads to a server path, automatically register the video (local path + full metadata) to your MediaCenter |
 
 ---
 
@@ -89,7 +89,7 @@ The script injects the following UI elements on different pages:
 | Task interval | Seconds between tasks when throttling |
 | Export metadata | Generate NFO + poster + banner (Beta) |
 | Show experimental features | Off by default: hides the whole MediaCenter push section and keeps the push disabled; turn it on to reveal and configure it |
-| Push to MediaCenter API (experimental) | While enabled, aria2/browser download is disabled; each video is pushed (download link + metadata) to the MediaCenter API instead |
+| Register to MediaCenter (experimental) | Automatically register each video to MediaCenter after aria2 finishes downloading; browser download is disabled and download mode is forced to aria2 while enabled |
 | MediaCenter API URL | Default `http://127.0.0.1:3000/api` |
 | API token | MediaCenter's `API_TOKEN` from `.env` (static service token); required for authentication |
 
@@ -155,31 +155,26 @@ The following media managers can also read/write this format for further editing
 
 ---
 
-## Push to MediaCenter API (experimental)
+## MediaCenter Registration (experimental, with aria2)
 
-The "Experimental: MediaCenter API push" toggle at the bottom of the settings dialog. When enabled, **aria2/browser download is fully disabled**; each video is instead pushed to your [MediaCenter](https://github.com/WLGH01/MediaCenter) API as "download link + full metadata".
+The "Experimental: MediaCenter registration (with aria2)" toggle at the bottom of the settings dialog. When enabled, **browser download is disabled** and download mode is forced to aria2; each video flows as:
 
-**Call flow** (contract per MediaCenter's `docs/API.md`):
+1. **aria2 download**: the direct link is pushed to your configured aria2 (RPC URL / secret / save dir / proxy all still apply)
+2. **Wait for completion**: the script polls `aria2.tellStatus` until the task is complete
+3. **Dedupe + register**: `GET {base}/media?filePath=…` checks by server path → `POST {base}/media` registers `filePath` (aria2 save dir + filename) plus `sourceMeta` (full metadata JSON)
+4. **Fill metadata**: `PUT {base}/media/:id` writes `title`, `description`, `author`, `tags`, `source: "hanime1"`
 
-1. `POST {base}/media` — create the media record (admin required):
-   ```json
-   {
-     "filePath": "https://vdownload.hembed.com/.../123-1080p.mp4?secure=...",
-     "mimeType": "video/mp4",
-     "sourceMeta": "{ \"source\":\"hanime1\", \"hanimeId\":\"123\", \"title\":\"...\", \"author\":\"...\", \"date\":\"...\", \"quality\":\"1080p\", \"downloadUrl\":\"...\", \"pageUrl\":\"...\", \"cover\":\"...\", \"banner\":\"...\", \"tags\":[\"...\"], \"likePct\":88, \"plot\":\"...\", \"pushedAt\":\"...\" }"
-   }
-   ```
-2. `PUT {base}/media/:id` — fill in title/description/author/tags/source (`title`, `description`, `author`, `tags`, `source: "hanime1"`, `sourceMeta`).
+> MediaCenter's `POST /media` only registers **files that already exist on the server** (it ffprobes the path) and does not download remote URLs — so aria2 must first download the file to a server-reachable path.
 
 **Prerequisites**
 
 | Item | Description |
 |---|---|
+| aria2 and MediaCenter on the same host / shared storage | The aria2 save dir must be a server path visible to the MediaCenter container; set "Save dir" to that path (e.g. `/media/hanime`) |
 | MediaCenter `API_TOKEN` configured | Set `API_TOKEN` in MediaCenter's `.env` and enter the same token in the script settings (`Authorization: Bearer <token>`, maps to the admin service account) |
-| MediaCenter must accept remote URLs | ⚠️ The current MediaCenter repo treats `filePath` as a **server-local path** and probes it with ffprobe (`createMediaRecord`); a remote https link is rejected (500). You need to extend MediaCenter: when `filePath` starts with `http(s)://`, skip the local probe and instead have MediaCenter download the link in the background, then run ffprobe on the downloaded file and backfill `media_info`/`fileSize`. The script already pushes per the contract above, so the flow works end-to-end once MediaCenter is extended |
-| Network reachability | The browser must reach the MediaCenter host (`@connect *` already allows any host) |
+| Network reachability | The browser must reach the aria2 RPC and MediaCenter hosts (`@connect *` already allows any host) |
 
-> Successful pushes show as green "Pushed to MediaCenter: title (quality, id=…)" lines in the log panel. The batch queue, cross-page resume, and push throttling all still apply in experimental mode.
+> Successful registration shows as a green "Downloaded & registered to MediaCenter: title (quality, id=…)" line in the log panel. Already-registered files (same server path) skip duplicate creation and only update metadata. The batch queue, cross-page resume, and push throttling all still apply in experimental mode.
 
 ---
 

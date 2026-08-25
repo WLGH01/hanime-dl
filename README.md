@@ -2,7 +2,7 @@
 
 ## 中文 | [English](./README.en.md)
 
-> 用于 [hanime1.me](https://hanime1.me/) 视频批量下载的油猴脚本（v1.4.0）。支持 aria2 RPC、作者/系列全量下载、自定义重命名、跨页续传、Kodi/Emby/Jellyfin/Plex 兼容 NFO 元数据导出；实验性支持推送直链+元数据到 MediaCenter API。
+> 用于 [hanime1.me](https://hanime1.me/) 视频批量下载的油猴脚本（v1.4.0）。支持 aria2 RPC、作者/系列全量下载、自定义重命名、跨页续传、Kodi/Emby/Jellyfin/Plex 兼容 NFO 元数据导出；实验性支持配合 aria2 下载后自动登记到 MediaCenter。
 
 **📦 一键安装：**[Greasy Fork 安装](https://greasyfork.org/zh-CN/scripts/592408-hanime1-me-%E6%89%B9%E9%87%8F%E4%B8%8B%E8%BD%BD%E5%B7%A5%E5%85%B7-batch-downloader)
 
@@ -24,7 +24,7 @@
 | 任务队列续传 | 进度实时持久化，切页/回退不中断，自动续传 |
 | 导出元数据 | Kodi 兼容 NFO + 竖屏封面 + 横屏横幅，打包 zip |
 | 推送限速 | 逐个串行 + 间隔，防站点封锁 |
-| MediaCenter 推送（实验性） | 把直链 + 完整元数据推送到自建 MediaCenter API，开启后替代 aria2/浏览器下载 |
+| MediaCenter 登记（实验性） | aria2 下载到服务器路径后自动登记到自建 MediaCenter（本地路径 + 完整元数据） |
 
 ---
 
@@ -89,7 +89,7 @@
 | 任务间隔 | 限速时每个任务间隔秒数 |
 | 导出元数据 | 是否生成 NFO + 封面 + 横幅（Beta） |
 | 显示实验性功能 | 关闭（默认）时隐藏整个 MediaCenter 推送配置区块，且强制不启用推送；开启后才显示并可配置 |
-| 推送到 MediaCenter API（实验性） | 开启后 aria2 / 浏览器下载不可用，仅把每个视频的直链 + 元数据推送到 MediaCenter API |
+| 推送到 MediaCenter（实验性） | aria2 下载完成后自动登记到 MediaCenter；开启后浏览器下载不可用，下载方式强制为 aria2 |
 | MediaCenter API 地址 | 默认 `http://127.0.0.1:3000/api` |
 | API 令牌 | MediaCenter `.env` 的 `API_TOKEN`（静态服务令牌），未配置则无法通过鉴权 |
 
@@ -155,31 +155,26 @@ zip 内部**按重命名规则建目录**（如 `作者A/标题 [1080p].nfo`）�
 
 ---
 
-## 推送到 MediaCenter API（实验性）
+## MediaCenter 登记（实验性，配合 aria2）
 
-设置弹窗底部「实验性：MediaCenter API 推送」开关。开启后 **aria2 / 浏览器下载全部禁用**，每个视频改为调用你的 [MediaCenter](https://github.com/WLGH01/MediaCenter) 接口推送「下载直链 + 完整元数据」。
+设置弹窗底部「实验性：MediaCenter 登记（配合 aria2）」开关。开启后**浏览器下载不可用**，下载方式强制为 aria2；每个视频的流程变为：
 
-**调用流程**（契约见 MediaCenter 的 `docs/API.md`）：
+1. **aria2 下载**：直链推给你配置的 aria2（RPC 地址 / 密钥 / 保存目录 / 代理照常生效）
+2. **等待完成**：脚本轮询 `aria2.tellStatus` 直到该任务下载完成
+3. **查重登记**：`GET {base}/media?filePath=…` 按服务器路径查重 → `POST {base}/media` 登记 `filePath`（aria2 保存目录 + 文件名）+ `sourceMeta`（完整元数据 JSON）
+4. **补全元数据**：`PUT {base}/media/:id` 写入 `title`、`description`、`author`、`tags`、`source: "hanime1"`
 
-1. `POST {base}/media` — 创建媒体记录（需管理员）：
-   ```json
-   {
-     "filePath": "https://vdownload.hembed.com/.../123-1080p.mp4?secure=...",
-     "mimeType": "video/mp4",
-     "sourceMeta": "{ \"source\":\"hanime1\", \"hanimeId\":\"123\", \"title\":\"...\", \"author\":\"...\", \"date\":\"...\", \"quality\":\"1080p\", \"downloadUrl\":\"...\", \"pageUrl\":\"...\", \"cover\":\"...\", \"banner\":\"...\", \"tags\":[\"...\"], \"likePct\":88, \"plot\":\"...\", \"pushedAt\":\"...\" }"
-   }
-   ```
-2. `PUT {base}/media/:id` — 补全标题/简介/作者/标签/来源（`title`、`description`、`author`、`tags`、`source: "hanime1"`、`sourceMeta`）。
+> MediaCenter 的 `POST /media` 只登记**服务器本地已存在的文件**（ffprobe 探测路径），不下载远程 URL——所以必须由 aria2 先把文件下到服务器可访问的路径。
 
 **前置条件**
 
 | 项 | 说明 |
 |---|---|
+| aria2 与 MediaCenter 同机或共享存储 | aria2 下载目录必须是 MediaCenter 容器可见的服务器路径；「保存目录」填该路径（如 `/media/hanime`） |
 | MediaCenter 配置 `API_TOKEN` | 在 MediaCenter 的 `.env` 设置 `API_TOKEN`，脚本设置里填入同一令牌（静态服务令牌，`Authorization: Bearer <token>`，映射为 admin 服务账户） |
-| MediaCenter 需支持远程 URL 入库 | ⚠️ 当前 MediaCenter 仓库版本的 `POST /media` 会把 `filePath` 当作**服务器本地路径**并用 ffprobe 探测（`createMediaRecord`），远程 https 直链会被拒（500）。需要你在 MediaCenter 端扩展：检测到 `filePath` 为 `http(s)://` 时跳过本地探测，改为由 MediaCenter 后台下载该直链、下载完成后用 ffprobe 补全 `media_info` 再回填 `fileSize`。脚本侧已按上述契约推送，MediaCenter 扩展后即可端到端工作 |
-| 网络可达 | 浏览器需能访问 MediaCenter 地址（`@connect *` 已放行任意主机） |
+| 网络可达 | 浏览器需能访问 aria2 RPC 与 MediaCenter 地址（`@connect *` 已放行） |
 
-> 推送成功在日志面板显示为绿色「已推送到 MediaCenter: 标题 (画质, id=…)」。批量任务队列、跨页续传、推送限速在实验性模式下同样生效。
+> 登记成功在日志面板显示为绿色「已下载并登记 MediaCenter: 标题 (画质, id=…)」；已登记过的文件（相同服务器路径）会跳过重复创建，只更新元数据。批量队列、跨页续传、推送限速在实验性模式下同样生效。
 
 ---
 
