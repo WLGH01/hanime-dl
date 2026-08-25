@@ -2,7 +2,7 @@
 
 ## 中文 | [English](./README.en.md)
 
-> 用于 [hanime1.me](https://hanime1.me/) 视频批量下载的油猴脚本（v1.3.0）。支持 aria2 RPC、作者/系列全量下载、自定义重命名、跨页续传、Kodi/Emby/Jellyfin/Plex 兼容 NFO 元数据导出。
+> 用于 [hanime1.me](https://hanime1.me/) 视频批量下载的油猴脚本（v1.4.0）。支持 aria2 RPC、作者/系列全量下载、自定义重命名、跨页续传、Kodi/Emby/Jellyfin/Plex 兼容 NFO 元数据导出；实验性支持推送直链+元数据到 MediaCenter API。
 
 **📦 一键安装：**[Greasy Fork 安装](https://greasyfork.org/zh-CN/scripts/592408-hanime1-me-%E6%89%B9%E9%87%8F%E4%B8%8B%E8%BD%BD%E5%B7%A5%E5%85%B7-batch-downloader)
 
@@ -24,6 +24,7 @@
 | 任务队列续传 | 进度实时持久化，切页/回退不中断，自动续传 |
 | 导出元数据 | Kodi 兼容 NFO + 竖屏封面 + 横屏横幅，打包 zip |
 | 推送限速 | 逐个串行 + 间隔，防站点封锁 |
+| MediaCenter 推送（实验性） | 把直链 + 完整元数据推送到自建 MediaCenter API，开启后替代 aria2/浏览器下载 |
 
 ---
 
@@ -87,6 +88,9 @@
 | 推送限速 | 开启后逐个串行推送并等待间隔，防封锁（默认关） |
 | 任务间隔 | 限速时每个任务间隔秒数 |
 | 导出元数据 | 是否生成 NFO + 封面 + 横幅（Beta） |
+| 推送到 MediaCenter API（实验性） | 开启后 aria2 / 浏览器下载不可用，仅把每个视频的直链 + 元数据推送到 MediaCenter API |
+| MediaCenter API 地址 | 默认 `http://127.0.0.1:3000/api` |
+| API 令牌 | MediaCenter `.env` 的 `API_TOKEN`（静态服务令牌），未配置则无法通过鉴权 |
 
 ---
 
@@ -147,6 +151,34 @@ zip 内部**按重命名规则建目录**（如 `作者A/标题 [1080p].nfo`）�
 - **Media Center Master**
 
 > 提示：Plex 默认刮削器不读 NFO，需在「设置 → 管理 → 媒体库 → 高级 → 代理」里手动选择 *Plex NFO Movie*。
+
+---
+
+## 推送到 MediaCenter API（实验性）
+
+设置弹窗底部「实验性：MediaCenter API 推送」开关。开启后 **aria2 / 浏览器下载全部禁用**，每个视频改为调用你的 [MediaCenter](https://github.com/WLGH01/MediaCenter) 接口推送「下载直链 + 完整元数据」。
+
+**调用流程**（契约见 MediaCenter 的 `docs/API.md`）：
+
+1. `POST {base}/media` — 创建媒体记录（需管理员）：
+   ```json
+   {
+     "filePath": "https://vdownload.hembed.com/.../123-1080p.mp4?secure=...",
+     "mimeType": "video/mp4",
+     "sourceMeta": "{ \"source\":\"hanime1\", \"hanimeId\":\"123\", \"title\":\"...\", \"author\":\"...\", \"date\":\"...\", \"quality\":\"1080p\", \"downloadUrl\":\"...\", \"pageUrl\":\"...\", \"cover\":\"...\", \"banner\":\"...\", \"tags\":[\"...\"], \"likePct\":88, \"plot\":\"...\", \"pushedAt\":\"...\" }"
+   }
+   ```
+2. `PUT {base}/media/:id` — 补全标题/简介/作者/标签/来源（`title`、`description`、`author`、`tags`、`source: "hanime1"`、`sourceMeta`）。
+
+**前置条件**
+
+| 项 | 说明 |
+|---|---|
+| MediaCenter 配置 `API_TOKEN` | 在 MediaCenter 的 `.env` 设置 `API_TOKEN`，脚本设置里填入同一令牌（静态服务令牌，`Authorization: Bearer <token>`，映射为 admin 服务账户） |
+| MediaCenter 需支持远程 URL 入库 | ⚠️ 当前 MediaCenter 仓库版本的 `POST /media` 会把 `filePath` 当作**服务器本地路径**并用 ffprobe 探测（`createMediaRecord`），远程 https 直链会被拒（500）。需要你在 MediaCenter 端扩展：检测到 `filePath` 为 `http(s)://` 时跳过本地探测，改为由 MediaCenter 后台下载该直链、下载完成后用 ffprobe 补全 `media_info` 再回填 `fileSize`。脚本侧已按上述契约推送，MediaCenter 扩展后即可端到端工作 |
+| 网络可达 | 浏览器需能访问 MediaCenter 地址（`@connect *` 已放行任意主机） |
+
+> 推送成功在日志面板显示为绿色「已推送到 MediaCenter: 标题 (画质, id=…)」。批量任务队列、跨页续传、推送限速在实验性模式下同样生效。
 
 ---
 

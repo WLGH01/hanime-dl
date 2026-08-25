@@ -3,9 +3,9 @@
 // @name:en      hanime1.me Batch Downloader
 // @name:zh-CN   hanime1.me 批量下载工具
 // @namespace    hanime1-batch-dl
-// @version      1.3.1
-// @description  视频批量下载：本页批量勾选/全选、当前作者全部下载、系列(playlist)全部下载、下载当前视频；支持 aria2 RPC（http/socks 代理）、重命名规则按 / 自动建子目录、推送限速、右侧贴边工具栏；任务队列跨页续传；批量完成后自动打包导出 Emby 元数据 zip（NFO+封面+横幅，按重命名目录结构）
-// @description:en  Batch download videos from hanime1.me: batch check/select-all, download current author's full uploads, download entire series, download current video; aria2 RPC (http/socks proxy), rename rules with sub-directories, push throttling, cross-page resume, and Emby NFO metadata zip export
+// @version      1.4.0
+// @description  视频批量下载：本页批量勾选/全选、当前作者全部下载、系列(playlist)全部下载、下载当前视频；支持 aria2 RPC（http/socks 代理）、重命名规则按 / 自动建子目录、推送限速、右侧贴边工具栏；任务队列跨页续传；批量完成后自动打包导出 Emby 元数据 zip（NFO+封面+横幅，按重命名目录结构）；实验性：推送到 MediaCenter API（直链+元数据）
+// @description:en  Batch download videos from hanime1.me: batch check/select-all, download current author's full uploads, download entire series, download current video; aria2 RPC (http/socks proxy), rename rules with sub-directories, push throttling, cross-page resume, Emby NFO metadata zip export; experimental: push download links + metadata to MediaCenter API
 // @author       WorkBuddy
 // @license      MIT
 // @match        https://hanime1.me/*
@@ -48,7 +48,10 @@
         overwrite: true,                                // aria2 allow-overwrite
         throttle: false,                                // 推送限速开关（关闭 = 不限速）
         throttleSec: 5,                                 // 限速时每个任务的间隔秒数
-        exportMeta: true                                // 导出封面 + Emby 兼容 NFO 元数据（作者/标签/点赞百分比）
+        exportMeta: true,                               // 导出封面 + Emby 兼容 NFO 元数据（作者/标签/点赞百分比）
+        mediaCenter: false,                             // 实验性：推送到 MediaCenter API（开启后仅用此方式，替代 aria2/浏览器下载）
+        mediaCenterBase: 'http://127.0.0.1:3000/api',   // MediaCenter API 基础地址
+        mediaCenterToken: ''                            // MediaCenter .env 的 API_TOKEN（静态服务令牌）
     };
 
     var cfg = loadCfg();
@@ -193,6 +196,101 @@
                 },
                 onerror: function () { reject(new Error('无法连接 aria2 RPC: ' + rpcUrl)); },
                 ontimeout: function () { reject(new Error('aria2 RPC 超时: ' + rpcUrl)); }
+            });
+        });
+    }
+
+    /* ================================================================
+     *  MediaCenter API 推送（实验性）
+     *  契约（docs/API.md）：
+     *    POST {base}/media  —— 创建媒体记录（仅管理员），filePath 传视频直链，
+     *                           mimeType=video/mp4，sourceMeta=完整元数据 JSON
+     *    PUT  {base}/media/:id —— 补全标题/简介/作者/标签/来源
+     *  鉴权：Authorization: Bearer <MediaCenter 的 API_TOKEN>（静态服务令牌）
+     * ================================================================ */
+
+    // 通用 MediaCenter 请求；token 缺省用 cfg.mediaCenterToken（测试时可覆盖）
+    function mcRequest(url, opts) {
+        opts = opts || {};
+        return new Promise(function (resolve, reject) {
+            GM_xmlhttpRequest({
+                method: opts.method || 'GET',
+                url: url,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer ' + (opts.token != null ? opts.token : cfg.mediaCenterToken)
+                },
+                data: opts.data ? JSON.stringify(opts.data) : undefined,
+                timeout: opts.timeout || 45000,
+                onload: function (res) {
+                    var body = null;
+                    try { body = JSON.parse(res.responseText); } catch (e) { /* 非 JSON 响应 */ }
+                    if (res.status >= 200 && res.status < 300) resolve({ status: res.status, body: body });
+                    else reject(new Error('MediaCenter HTTP ' + res.status + (body && body.error ? ' (' + body.error + ')' : '')));
+                },
+                onerror: function () { reject(new Error('无法连接 MediaCenter: ' + url)); },
+                ontimeout: function () { reject(new Error('MediaCenter 请求超时: ' + url)); }
+            });
+        });
+    }
+
+    // 测试 MediaCenter 连接（用输入框当前值，不落盘）
+    function testMediaCenter(base, token) {
+        return mcRequest(base.replace(/\/+$/, '') + '/media?limit=1', { token: token });
+    }
+
+    // 构造推送载荷：直链 + 完整元数据（JSON 写入 sourceMeta，同时拆字段走 PUT）
+    function buildMcPayload(info, picked) {
+        return {
+            source: 'hanime1',
+            hanimeId: info.id || '',
+            title: info.title || '',
+            author: info.author || '',
+            date: info.date || '',
+            quality: (picked && picked.quality) || info.quality || '',
+            downloadUrl: (picked && picked.url) || '',
+            pageUrl: info.url || '',
+            cover: info.cover || '',
+            banner: info.banner || '',
+            tags: info.tags || [],
+            likePct: info.likePct || 0,
+            plot: info.plot || '',
+            pushedAt: new Date().toISOString()
+        };
+    }
+
+    // 推送到 MediaCenter：POST /media 建记录 → PUT /media/:id 补全元数据
+    // 注意：当前 MediaCenter 仓库版本的 POST /media 会对 filePath 做本地 ffprobe 探测，
+    // 需在 MediaCenter 端扩展「检测到 http(s) filePath 则跳过本地探测、由服务端下载后再探测」。
+    function pushToMediaCenter(info, picked) {
+        var base = (cfg.mediaCenterBase || '').replace(/\/+$/, '');
+        if (!base) return Promise.reject(new Error('未配置 MediaCenter API 地址'));
+        var payload = buildMcPayload(info, picked);
+        var sourceMeta = JSON.stringify(payload);
+        return mcRequest(base + '/media', {
+            method: 'POST',
+            data: {
+                filePath: picked.url,
+                mimeType: 'video/mp4',
+                sourceMeta: sourceMeta
+            },
+            timeout: 60000      // POST 时服务端可能对直链做探测，给足时间
+        }).then(function (res) {
+            var id = res.body && res.body.id;
+            if (!id) throw new Error('MediaCenter 未返回媒体 id');
+            // 补全元数据（标题/简介/作者/标签/来源）；tags 恒为数组，避免命中 media.noUpdate
+            return mcRequest(base + '/media/' + id, {
+                method: 'PUT',
+                data: {
+                    title: info.title || undefined,
+                    description: info.plot || '',
+                    author: info.author || undefined,
+                    tags: info.tags || [],
+                    source: 'hanime1',
+                    sourceMeta: sourceMeta
+                }
+            }).then(function () {
+                return { id: id, title: info.title || '' };
             });
         });
     }
@@ -563,6 +661,19 @@
         }
         info.quality = picked.quality;
         var target = buildFileTarget(info, index);
+
+        // 实验性：MediaCenter API 推送模式（开启后替代 aria2 / 浏览器下载）
+        if (cfg.mediaCenter) {
+            return pushToMediaCenter(info, picked).then(function (r) {
+                log('✓ 已推送到 MediaCenter: ' + (r.title || target.display) + ' (' + picked.quality + ', id=' + r.id + ')', 'ok');
+                statPushed();
+                return true;
+            }).catch(function (e) {
+                log('✗ MediaCenter 推送失败 ' + target.display + ' — ' + e.message, true);
+                statFailed();
+                return false;
+            });
+        }
 
         if (cfg.mode === 'aria2') {
             var options = {
@@ -950,6 +1061,11 @@
             '  <div class="h1dl-hint">占位符：{title} 标题 · {author} 作者 · {id} 视频ID · {quality} 画质 · {date} 日期 · {index} 序号<br>用 <b>/</b> 分隔可自动创建子目录，如：{author} / {title} [{quality}]</div>',
             '  <label class="h1dl-row"><span class="h1dl-chk"><input type="checkbox" id="h1dl-meta"> 导出 NFO 与封面元数据（Beta）</span></label>',
             '  <div class="h1dl-hint">每个视频生成 <b>同名 .nfo</b>（标题/作者/标签/点赞/简介/日期）与 <b>-poster.jpg 封面</b>、<b>-banner.jpg 横幅</b>，统一打包进 zip，批量完成后自动下载，解压整目录拖入下载目录即可。</div>',
+            '  <div class="h1dl-exp">实验性：MediaCenter API 推送</div>',
+            '  <label class="h1dl-row"><span class="h1dl-chk"><input type="checkbox" id="h1dl-mc"> 推送到 MediaCenter API（开启后仅用此方式，aria2 / 浏览器下载不可用）</span></label>',
+            '  <label class="h1dl-row">MediaCenter API 地址<input id="h1dl-mc-base" placeholder="http://127.0.0.1:3000/api"></label>',
+            '  <label class="h1dl-row">API 令牌（MediaCenter 的 API_TOKEN）<input id="h1dl-mc-token" placeholder="静态服务令牌，留空无法通过鉴权"></label>',
+            '  <div class="h1dl-hint">开启后每个视频调用 <b>POST /media</b> 推送直链（filePath）+ 元数据（sourceMeta），再用 <b>PUT /media/:id</b> 补全标题/作者/标签/简介。<br>⚠ 需 MediaCenter 端支持远程 URL 入库（当前仓库版本仅支持服务器本地路径，见 README）。</div>',
             '  <div class="h1dl-btns">',
             '    <button id="h1dl-test" class="h1dl-btn-ghost">测试 aria2 连接</button>',
             '    <span style="flex:1"></span>',
@@ -970,11 +1086,35 @@
         overlay.querySelector('#h1dl-quality').value = cfg.quality;
         overlay.querySelector('#h1dl-tpl').value = cfg.renameTpl;
         overlay.querySelector('#h1dl-meta').checked = !!cfg.exportMeta;
+        overlay.querySelector('#h1dl-mc').checked = !!cfg.mediaCenter;
+        overlay.querySelector('#h1dl-mc-base').value = cfg.mediaCenterBase || DEFAULT_CONFIG.mediaCenterBase;
+        overlay.querySelector('#h1dl-mc-token').value = cfg.mediaCenterToken || '';
+
+        // 实验性开关联动：开启后禁用下载方式与 aria2 相关控件（仅用 MediaCenter 推送）
+        function refreshMcState() {
+            var on = overlay.querySelector('#h1dl-mc').checked;
+            ['#h1dl-mode', '#h1dl-rpc', '#h1dl-secret', '#h1dl-dir', '#h1dl-proxy'].forEach(function (sel) {
+                var el = overlay.querySelector(sel);
+                if (el) el.disabled = on;
+            });
+            var testBtn = overlay.querySelector('#h1dl-test');
+            if (testBtn) testBtn.textContent = on ? '测试 MediaCenter 连接' : '测试 aria2 连接';
+        }
+        overlay.querySelector('#h1dl-mc').addEventListener('change', refreshMcState);
+        refreshMcState();
 
         overlay.querySelector('#h1dl-cancel').addEventListener('click', function () { overlay.remove(); });
 
         overlay.querySelector('#h1dl-test').addEventListener('click', function () {
-            // 用输入框当前值直接测试，不落盘
+            // 实验性模式下测试 MediaCenter，否则测试 aria2（均用输入框当前值，不落盘）
+            if (overlay.querySelector('#h1dl-mc').checked) {
+                var mcBase = overlay.querySelector('#h1dl-mc-base').value.trim() || DEFAULT_CONFIG.mediaCenterBase;
+                var mcToken = overlay.querySelector('#h1dl-mc-token').value.trim();
+                testMediaCenter(mcBase, mcToken)
+                    .then(function () { toast('MediaCenter 连接成功'); })
+                    .catch(function (e) { toast('MediaCenter 连接失败: ' + e.message); });
+                return;
+            }
             var rpcUrl = overlay.querySelector('#h1dl-rpc').value.trim() || DEFAULT_CONFIG.aria2Rpc;
             var secret = overlay.querySelector('#h1dl-secret').value.trim();
             aria2Rpc('aria2.getVersion', ['token:' + secret], rpcUrl)
@@ -993,6 +1133,9 @@
             cfg.quality = overlay.querySelector('#h1dl-quality').value;
             cfg.renameTpl = overlay.querySelector('#h1dl-tpl').value.trim() || DEFAULT_CONFIG.renameTpl;
             cfg.exportMeta = overlay.querySelector('#h1dl-meta').checked;
+            cfg.mediaCenter = overlay.querySelector('#h1dl-mc').checked;
+            cfg.mediaCenterBase = overlay.querySelector('#h1dl-mc-base').value.trim() || DEFAULT_CONFIG.mediaCenterBase;
+            cfg.mediaCenterToken = overlay.querySelector('#h1dl-mc-token').value.trim();
             saveCfg();
             overlay.remove();
             toast('设置已保存');
@@ -1410,6 +1553,8 @@
             '#h1dl-settings .h1dl-chk{display:flex;align-items:flex-start;gap:8px;font-size:13px;color:#ccc;line-height:1.5;cursor:pointer;}',
             '#h1dl-settings .h1dl-chk input{margin-top:2px;accent-color:#e04a6f;width:15px;height:15px;padding:0;flex:none;}',
             '#h1dl-settings .h1dl-hint{font-size:11px;color:#888;margin-bottom:14px;line-height:1.6;}',
+            '#h1dl-settings .h1dl-exp{margin:2px 0 10px;padding-top:12px;border-top:1px dashed #555;color:#ff9b7b;font-size:12px;font-weight:bold;}',
+            '#h1dl-settings input:disabled,#h1dl-settings select:disabled{opacity:.45;cursor:not-allowed;}',
             '#h1dl-settings .h1dl-btns{display:flex;gap:8px;}'
         ].join('\n');
         var style = document.createElement('style');
