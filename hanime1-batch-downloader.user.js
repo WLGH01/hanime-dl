@@ -336,8 +336,9 @@
                     source: 'hanime1',
                     sourceMeta: sourceMeta
                 };
-                // 发布日期作为媒体的原始 createdAt（管理员可写），如 2026-08-24 → 2026-08-24T00:00:00.000Z
-                if (info.date) data.createdAt = info.date + 'T00:00:00.000Z';
+                // 发布日期作为媒体的「更新时间」（管理员可写），如 2026-08-24 → 2026-08-24T00:00:00.000Z；
+                // 创建时间保留真实入库时刻（不传 createdAt）
+                if (info.date) data.updatedAt = info.date + 'T00:00:00.000Z';
                 return mcRequest(base + '/media/' + r.id, {
                     method: 'PUT',
                     data: data
