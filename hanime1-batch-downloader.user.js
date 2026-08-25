@@ -1062,7 +1062,7 @@
             '  <div class="h1dl-hint">占位符：{title} 标题 · {author} 作者 · {id} 视频ID · {quality} 画质 · {date} 日期 · {index} 序号<br>用 <b>/</b> 分隔可自动创建子目录，如：{author} / {title} [{quality}]</div>',
             '  <label class="h1dl-row"><span class="h1dl-chk"><input type="checkbox" id="h1dl-meta"> 导出 NFO 与封面元数据（Beta）</span></label>',
             '  <div class="h1dl-hint">每个视频生成 <b>同名 .nfo</b>（标题/作者/标签/点赞/简介/日期）与 <b>-poster.jpg 封面</b>、<b>-banner.jpg 横幅</b>，统一打包进 zip，批量完成后自动下载，解压整目录拖入下载目录即可。</div>',
-            '  <label class="h1dl-row"><span class="h1dl-chk"><input type="checkbox" id="h1dl-exp-show"> 显示实验性功能（MediaCenter API 推送，关掉即隐藏）</span></label>',
+            '  <label class="h1dl-row"><span class="h1dl-chk"><input type="checkbox" id="h1dl-exp-show"> 显示实验性功能</span></label>',
             '  <div id="h1dl-exp-block">',
             '    <div class="h1dl-exp">实验性：MediaCenter API 推送</div>',
             '    <label class="h1dl-row"><span class="h1dl-chk"><input type="checkbox" id="h1dl-mc"> 推送到 MediaCenter API（开启后仅用此方式，aria2 / 浏览器下载不可用）</span></label>',
