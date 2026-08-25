@@ -2,7 +2,7 @@
 
 ## 中文 | [English](./README.en.md)
 
-> 用于 [hanime1.me](https://hanime1.me/) 视频批量下载的油猴脚本（v1.5.0）。支持 aria2 RPC、作者/系列全量下载、自定义重命名、跨页续传、Kodi/Emby/Jellyfin/Plex 兼容 NFO 元数据导出；实验性支持配合 aria2 下载后自动登记到 MediaCenter。
+> 用于 [hanime1.me](https://hanime1.me/) 视频批量下载的油猴脚本（v1.4.0）。支持 aria2 RPC、作者/系列全量下载、自定义重命名、跨页续传、Kodi/Emby/Jellyfin/Plex 兼容 NFO 元数据导出；实验性支持配合 aria2 下载后自动登记到 MediaCenter。
 
 **📦 一键安装：**[Greasy Fork 安装](https://greasyfork.org/zh-CN/scripts/592408-hanime1-me-%E6%89%B9%E9%87%8F%E4%B8%8B%E8%BD%BD%E5%B7%A5%E5%85%B7-batch-downloader)
 

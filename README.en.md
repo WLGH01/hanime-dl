@@ -2,7 +2,7 @@
 
 ## [中文](./README.md) | English
 
-> A Tampermonkey userscript for batch downloading videos from [hanime1.me](https://hanime1.me/) (v1.5.0). Supports aria2 RPC, full author/series download, custom rename rules, cross-page resume, Kodi/Emby/Jellyfin/Plex-compatible NFO metadata export; experimental: auto-register downloaded videos (local path + metadata) to a self-hosted MediaCenter after aria2 finishes.
+> A Tampermonkey userscript for batch downloading videos from [hanime1.me](https://hanime1.me/) (v1.4.0). Supports aria2 RPC, full author/series download, custom rename rules, cross-page resume, Kodi/Emby/Jellyfin/Plex-compatible NFO metadata export; experimental: auto-register downloaded videos (local path + metadata) to a self-hosted MediaCenter after aria2 finishes.
 
 **📦 One-click install:** [Install on Greasy Fork](https://greasyfork.org/zh-CN/scripts/592408-hanime1-me-%E6%89%B9%E9%87%8F%E4%B8%8B%E8%BD%BD%E5%B7%A5%E5%85%B7-batch-downloader)
 
