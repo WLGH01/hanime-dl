@@ -2,7 +2,7 @@
 
 ## [中文](./README.md) | English
 
-> A Tampermonkey userscript for batch downloading videos from [hanime1.me](https://hanime1.me/) (v1.4.1). Supports aria2 RPC, full author/series download, custom rename rules, cross-page resume, Kodi/Emby/Jellyfin/Plex-compatible NFO metadata export; experimental: auto-register downloaded videos (local path + metadata) to a self-hosted MediaCenter after aria2 finishes.
+> A Tampermonkey userscript for batch downloading videos from [hanime1.me](https://hanime1.me/) (v1.4.3). Supports aria2 RPC, full author/series download, custom rename rules, cross-page resume, Kodi/Emby/Jellyfin/Plex-compatible NFO metadata export; experimental: auto-register downloaded videos (local path + metadata) to a self-hosted MediaCenter after aria2 finishes.
 
 **📦 One-click install:** [Install on Greasy Fork](https://greasyfork.org/zh-CN/scripts/592408-hanime1-me-%E6%89%B9%E9%87%8F%E4%B8%8B%E8%BD%BD%E5%B7%A5%E5%85%B7-batch-downloader)
 
@@ -48,7 +48,7 @@ The script injects the following UI elements on different pages:
 | ② | **Checkbox** | Top-left of each video cover | Semi-transparent rounded square; click to check, highlights pink when checked |
 | ③ | **Video page panel** | Video page, below the player | Horizontal row: quality dropdown + "⬇ Download current video" + "👤 Download current author" + "⚙ Settings" |
 | ④ | **Batch buttons** | Top of author / series pages | Primary "⬇ Download all / entire series" + secondary "Download this page" + "⚙ Settings" |
-| ⑤ | **Log panel** | Bottom-left (during batch tasks) | Header shows `queue N/M · pushed N · failed N`; green = success, red = failure, grey = progress; includes "Stop queue / Export zip / Clear / Collapse" |
+| ⑤ | **Log panel** | Bottom-left (during batch tasks) | Header shows `queue N/M · pushed N · failed N`; green = success, red = failure, grey = progress; includes "Stop / Clear queue / Export zip / Clear log / Collapse" |
 | ⑥ | **Settings dialog** | Opened by any "⚙ Settings" | Centered modal with download mode, aria2 RPC URL/secret, save dir, proxy, quality, rename rule, push throttling, metadata export (see below) |
 
 > Color scheme: primary buttons/highlights are pink (`#e04a6f`), success logs are green, failure logs are red — coordinated with the site's dark theme.

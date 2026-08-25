@@ -3,7 +3,7 @@
 // @name:en      hanime1.me Batch Downloader
 // @name:zh-CN   hanime1.me 批量下载工具
 // @namespace    hanime1-batch-dl
-// @version      1.4.1
+// @version      1.4.3
 // @description  视频批量下载：本页批量勾选/全选、当前作者全部下载、系列(playlist)全部下载、下载当前视频；支持 aria2 RPC（http/socks 代理）、重命名规则按 / 自动建子目录、推送限速、右侧贴边工具栏；任务队列跨页续传；批量完成后自动打包导出 Emby 元数据 zip（NFO+封面+横幅，按重命名目录结构）；实验性：推送到 MediaCenter API（直链+元数据）
 // @description:en  Batch download videos from hanime1.me: batch check/select-all, download current author's full uploads, download entire series, download current video; aria2 RPC (http/socks proxy), rename rules with sub-directories, push throttling, cross-page resume, Emby NFO metadata zip export; experimental: push download links + metadata to MediaCenter API
 // @author       WorkBuddy
@@ -35,7 +35,7 @@
     var SITE = location.protocol + '//' + location.host;
     var UA = navigator.userAgent;
     var MAX_AUTHOR_PAGES = 30;      // 作者页兜底翻页上限
-    var INFO_CONCURRENCY = 3;       // 批量抓取视频信息并发数
+    var INFO_CONCURRENCY = 5;       // 批量抓取视频信息并发数
 
     var DEFAULT_CONFIG = {
         mode: 'aria2',                                  // aria2 | browser
@@ -48,7 +48,7 @@
         overwrite: true,                                // aria2 allow-overwrite
         throttle: false,                                // 推送限速开关（关闭 = 不限速）
         throttleSec: 5,                                 // 限速时每个任务的间隔秒数
-        exportMeta: true,                               // 导出封面 + Emby 兼容 NFO 元数据（作者/标签/点赞百分比）
+        exportMeta: false,                              // 导出封面 + Emby 兼容 NFO 元数据（作者/标签/点赞百分比）
         showExperimental: false,                        // 显示实验性功能（MediaCenter API 推送）配置区块
         mediaCenter: false,                             // 实验性：配合 aria2 下载完成后自动登记到 MediaCenter（浏览器下载不可用）
         mediaCenterBase: 'http://127.0.0.1:3000/api',   // MediaCenter API 基础地址
@@ -269,16 +269,39 @@
         };
     }
 
-    // 推送 aria2 下载任务（不等待下载完成、不重试）：addUri 成功即视为推送完成，失败立即失败
+    // 轮询 aria2 任务直到完成/失败（默认最长等 12 小时；页面被销毁后队列跨页续传兜底）
+    function waitAria2Complete(gid, timeoutMs) {
+        var deadline = Date.now() + (timeoutMs || 12 * 3600 * 1000);
+        return new Promise(function (resolve, reject) {
+            function poll() {
+                aria2Rpc('aria2.tellStatus', ['token:' + cfg.aria2Secret, gid]).then(function (st) {
+                    if (st.status === 'complete') resolve(st);
+                    else if (st.status === 'error' || st.status === 'removed') {
+                        reject(new Error('aria2 下载失败: ' + (st.errorMessage || st.status)));
+                    } else if (Date.now() > deadline) {
+                        reject(new Error('等待 aria2 下载超时（12h），可稍后「继续批量任务」自动重试'));
+                    } else {
+                        setTimeout(poll, 3000);
+                    }
+                }).catch(reject);
+            }
+            poll();
+        });
+    }
+
+    // 推送 aria2 下载任务并等待下载完成：addUri → 轮询 tellStatus 直到 complete → 返回文件字节数
     // - addUri 报「文件已存在/任务已存在」：跳过下载（返回 skipped），仍登记
     function aria2Push(picked, options) {
         return aria2Rpc('aria2.addUri', ['token:' + cfg.aria2Secret, [picked.url], options])
             .then(function (gid) {
-                return { gid: gid };
+                log('⏳ aria2 开始下载: ' + (options.out || picked.url) + '（gid=' + gid + '），完成后自动登记 MediaCenter');
+                return waitAria2Complete(gid).then(function (st) {
+                    return { gid: gid, fileSize: parseInt(st.totalLength, 10) || 0 };
+                });
             })
             .catch(function (e) {
                 if (/already exists|is being downloaded/i.test(e.message || '')) {
-                    return { skipped: true };
+                    return { skipped: true, fileSize: 0 };
                 }
                 throw e;
             });
@@ -333,10 +356,10 @@
             });
     }
 
-    // 实验性：推 aria2 下载任务（不等待完成）→ 立即把元数据登记到 MediaCenter
+    // 实验性：推 aria2 下载任务并等待完成 → 文件就绪后把本地路径 + 元数据登记到 MediaCenter
     // 前提：aria2 与 MediaCenter 在同一台机器（或共享存储）；「保存目录」须为 MediaCenter 可访问的服务器路径。
-    // 注意：文件未下载完成时登记，需 MediaCenter 端支持「文件暂不存在也建记录」（见配套补丁），
-    //       登记后由 MediaCenter 在文件就绪后回填 ffprobe/fileSize；fileSize 未知时传 0。
+    // 注意：必须等下载完成后登记——批量任务多时若文件未就绪就 POST，服务端 ffprobe/哈希会超时，
+    //       导致后续任务全部登记失败；等待后 fileSize 用 aria2 totalLength 补全。
     function downloadAndPushToMediaCenter(info, picked, target) {
         var base = (cfg.mediaCenterBase || '').replace(/\/+$/, '');
         if (!base) return Promise.reject(new Error('未配置 MediaCenter API 地址'));
@@ -351,9 +374,9 @@
                 if (dl.skipped) {
                     log('ℹ aria2 检测到文件已存在，跳过下载，仍登记 MediaCenter: ' + target.display);
                 } else {
-                    log('✓ 已推送 aria2 下载: ' + target.display + '（gid=' + dl.gid + '），无需等待完成，立即登记');
+                    log('✓ aria2 下载完成: ' + target.display + '，登记 MediaCenter');
                 }
-                return registerToMediaCenter(base, filePath, sourceMeta, info, 0);
+                return registerToMediaCenter(base, filePath, sourceMeta, info, dl.fileSize);
             });
     }
 
@@ -529,11 +552,16 @@
     function fetchAuthorVideos() {
         var q = loadQueue();
         if (!q || q.phase !== 'collect') return Promise.resolve([]);
+        var qid = q.qid;
         log('开始获取作者全部视频: ' + q.userUrl);
         toast('正在获取作者视频列表…');
         function step() {
+            var cur = loadQueue();
+            if (queueStopFlag || !cur || cur.qid !== qid) return Promise.resolve([]);   // 用户停止/队列被替换：立即终止
             var url = q.userUrl + (q.userUrl.indexOf('?') > -1 ? '&' : '?') + 'page=' + q.page;
             return gmFetch(url).then(function (html) {
+                var cur2 = loadQueue();
+                if (queueStopFlag || !cur2 || cur2.qid !== qid) return [];   // 翻页间隙被停止/替换：丢弃本页
                 var doc = new DOMParser().parseFromString(html, 'text/html');
                 var videos = collectPageVideos(doc);
                 var fresh = 0;
@@ -542,6 +570,7 @@
                 });
                 saveQueue(q);   // 每收集一页就落盘，导航中断也不丢
                 log('作者第 ' + q.page + ' 页: ' + videos.length + ' 个视频' + (fresh < videos.length ? '（无新增，停止）' : ''));
+                if (queueStopFlag || !loadQueue() || loadQueue().qid !== qid) return [];
                 if (fresh === 0 || videos.length === 0 || q.page >= MAX_AUTHOR_PAGES) return q.items;
                 q.page++;
                 var next = step();
@@ -751,7 +780,7 @@
         // 实验性：MediaCenter 登记模式 —— aria2 下载到服务器路径，完成后自动登记（配合 aria2 使用）
         if (cfg.mediaCenter) {
             return downloadAndPushToMediaCenter(info, picked, target).then(function (r) {
-                log('✓ 已推送 aria2 并登记 MediaCenter: ' + (r.title || target.display) + ' (' + picked.quality + ', id=' + r.id + (r.exists ? '，记录已存在，仅更新元数据' : '') + ')', 'ok');
+                log('✓ 已下载并登记 MediaCenter: ' + (r.title || target.display) + ' (' + picked.quality + ', id=' + r.id + (r.exists ? '，记录已存在，仅更新元数据' : '') + ')', 'ok');
                 statPushed();
                 return true;
             }).catch(function (e) {
@@ -831,6 +860,7 @@
     var QUEUE_KEY = 'h1dl_queue';
     var queueRunning = false;
     var queueStopFlag = false;
+    var collectRunning = '';   // 正在运行的收集链 qid（'' = 无）：防止同队列双链并发写
 
     function loadQueue() {
         try {
@@ -857,8 +887,10 @@
     // 启动批量推送（勾选下载 / 作者全部下载 共用入口）
     function startBatch(items) {
         if (!items.length) { toast('没有可下载的视频'); return; }
+        queueStopFlag = false;
         saveQueue({
             phase: 'push',
+            qid: 'q' + Date.now() + '-' + Math.floor(Math.random() * 1e6),  // 队列唯一标识：防止旧 worker 把结果写进被替换的新队列
             items: items,
             done: {},
             doing: {},
@@ -876,6 +908,7 @@
         if (queueRunning) return;
         var q = loadQueue();
         if (!q || q.phase !== 'push' || !q.items.length) return;
+        var qid = q.qid;                    // 本次运行的队列标识：识别队列是否已被新批次替换
         queueRunning = true;
         queueStopFlag = false;
         expandLogPanel();
@@ -888,7 +921,7 @@
         // 认领第一个未完成且未被其他 worker 认领的任务，返回下标；-1 = 无
         function claim() {
             var qq = loadQueue();
-            if (!qq) return -1;
+            if (!qq || qq.qid !== qid) return -1;   // 队列已被新批次替换：停止认领
             for (var i = 0; i < qq.items.length; i++) {
                 var it = qq.items[i];
                 if (!qq.done[it.id] && !qq.doing[it.id]) {
@@ -902,7 +935,7 @@
 
         function finishIfNeeded() {
             var qq = loadQueue();
-            if (!qq) return;
+            if (!qq || qq.qid !== qid) return;
             if (queueFinished(qq)) {
                 log('==== 批量任务结束: 成功推送 ' + qq.ok + '/' + qq.items.length + ' ====');
                 toast('批量下载完成: 已推送 ' + qq.ok + '/' + qq.items.length);
@@ -917,13 +950,13 @@
         function worker() {
             if (queueStopFlag) return Promise.resolve();
             var qq = loadQueue();
-            if (!qq || queueFinished(qq)) return Promise.resolve();
+            if (!qq || qq.qid !== qid || queueFinished(qq)) return Promise.resolve();
             var i = claim();
             if (i < 0) return Promise.resolve();
             var item = qq.items[i];
             return processItem(item, i).then(function (ok) {
                 var q2 = loadQueue();
-                if (!q2) return;
+                if (!q2 || q2.qid !== qid) return;   // 队列已被新批次替换：丢弃本次结果，避免污染新队列
                 delete q2.doing[item.id];
                 q2.done[item.id] = 1;
                 if (ok) q2.ok++; else q2.fail++;
@@ -942,8 +975,14 @@
         Promise.all(workers).then(function () {
             queueRunning = false;
             finishIfNeeded();
-            if (queueStopFlag) {
+            var qn = loadQueue();
+            if (queueStopFlag && qn && qn.qid === qid) {
                 log('==== 批量队列已停止（进度已保留，可通过菜单「继续批量任务」恢复）====', true);
+            }
+            // 停止/运行期间用户启动了新批次：startBatch 的 runQueue 当时因 queueRunning 被跳过，这里接力启动
+            if (qn && qn.phase === 'push' && qn.qid !== qid && !qn.stopped && !queueFinished(qn)) {
+                log('==== 检测到新的批量任务，自动开始 ====', true);
+                runQueue(true);
             }
         });
     }
@@ -955,13 +994,28 @@
         queueStopFlag = true;
         if (q.phase === 'push') {
             q.stopped = true;
-            q.doing = {};
+            // 注意：不在此清 doing——在途 worker 仍在处理认领中的任务，
+            // 清了会导致这些任务被二次认领；跨页恢复时 resumeQueue/autoResume 会统一清理
             saveQueue(q);
             log('停止请求已发出，正在结束当前任务…', true);
         } else {
-            clearQueue();
-            log('已取消作者列表收集任务', true);
+            // collect / collectList：标记停止（不删队列，翻页循环检查标志后自然退出）
+            q.stopped = true;
+            saveQueue(q);
+            log('停止请求已发出，正在结束当前页收集…', true);
         }
+    }
+
+    // 彻底清空队列（删除持久化进度，与「停止」保留进度不同；日志面板/菜单触发）
+    function clearQueueTask() {
+        var q = loadQueue();
+        if (!q) { toast('当前没有待处理的批量任务'); return; }
+        if (!confirm('确定清空批量队列？将删除全部收集/推送进度，且无法恢复。')) return;
+        queueStopFlag = true;      // 让在途 worker/收集链收尾，不再认领新任务
+        collectRunning = '';
+        clearQueue();
+        log('==== 批量队列已清空 ====', true);
+        toast('批量队列已清空');
     }
 
     // 恢复（菜单/日志面板触发）
@@ -970,14 +1024,19 @@
         if (!q) { toast('当前没有待处理的任务'); return; }
         if (q.phase === 'push') {
             q.stopped = false;
-            q.doing = {};   // 清掉上次页面遗留的认领标记
+            if (!queueRunning) q.doing = {};   // 仅当无在途 worker（跨页恢复）时才清认领标记，避免在途任务被二次认领
             saveQueue(q);
+            queueStopFlag = false;   // 立即解除停止标志：若旧 worker 仍在收尾，让它们继续而非停住
             runQueue(true);
         } else if (q.phase === 'collect') {
+            q.stopped = false;
+            queueStopFlag = false;
             q.page = q.page || 1;
             saveQueue(q);
             continueAuthorCollect();
         } else if (q.phase === 'collectList') {
+            q.stopped = false;
+            queueStopFlag = false;
             q.page = q.page || 1;
             saveQueue(q);
             continueListCollect();
@@ -990,11 +1049,19 @@
         if (!q) return;
         expandLogPanel();
         if (q.phase === 'collect') {
-            log('检测到未完成的作者列表收集（已收集 ' + (q.items || []).length + ' 个，第 ' + (q.page || 1) + ' 页），自动继续…', true);
-            continueAuthorCollect();
+            if (q.stopped) {
+                log('检测到已暂停的作者列表收集（已收集 ' + (q.items || []).length + ' 个，第 ' + (q.page || 1) + ' 页），可通过菜单「继续批量任务」恢复', true);
+            } else {
+                log('检测到未完成的作者列表收集（已收集 ' + (q.items || []).length + ' 个，第 ' + (q.page || 1) + ' 页），自动继续…', true);
+                continueAuthorCollect();
+            }
         } else if (q.phase === 'collectList') {
-            log('检测到未完成的系列列表收集（已收集 ' + (q.items || []).length + ' 个，第 ' + (q.page || 1) + ' 页），自动继续…', true);
-            continueListCollect();
+            if (q.stopped) {
+                log('检测到已暂停的系列列表收集（已收集 ' + (q.items || []).length + ' 个，第 ' + (q.page || 1) + ' 页），可通过菜单「继续批量任务」恢复', true);
+            } else {
+                log('检测到未完成的系列列表收集（已收集 ' + (q.items || []).length + ' 个，第 ' + (q.page || 1) + ' 页），自动继续…', true);
+                continueListCollect();
+            }
         } else if (q.phase === 'push') {
             if (q.stopped) {
                 log('检测到已手动暂停的批量任务（已完成 ' + queueDoneCount(q) + '/' + q.items.length + '），可通过菜单「继续批量任务」恢复', true);
@@ -1044,7 +1111,7 @@
         logPanel.innerHTML =
             '<div class="h1dl-log-head">' +
             '  <span>下载日志 <span id="h1dl-stat"></span></span>' +
-            '  <span><span class="h1dl-log-stop">停止队列</span> · <span class="h1dl-log-zip">导出zip</span> · <span class="h1dl-log-clear">清空</span> · <span class="h1dl-log-toggle">收起</span></span>' +
+            '  <span><span class="h1dl-log-stop">停止</span> · <span class="h1dl-log-clearq">清空队列</span> · <span class="h1dl-log-zip">导出zip</span> · <span class="h1dl-log-clear">清空日志</span> · <span class="h1dl-log-toggle">收起</span></span>' +
             '</div>' +
             '<div class="h1dl-log-body"></div>';
         document.body.appendChild(logPanel);
@@ -1054,6 +1121,7 @@
             this.textContent = collapsed ? '展开' : '收起';
         });
         logPanel.querySelector('.h1dl-log-stop').addEventListener('click', stopQueue);
+        logPanel.querySelector('.h1dl-log-clearq').addEventListener('click', clearQueueTask);
         logPanel.querySelector('.h1dl-log-zip').addEventListener('click', exportMetaZip);
         logPanel.querySelector('.h1dl-log-clear').addEventListener('click', function () {
             logBody.innerHTML = '';
@@ -1453,8 +1521,10 @@
         // 统一改走 /uploaded 专页：主页只有最近 12 个且翻页无效
         userUrl = toUploadedUrl(userUrl);
         // 收集任务也持久化：翻页收集期间切页/回退，下个页面自动接着收集
+        queueStopFlag = false;
         saveQueue({
             phase: 'collect',
+            qid: 'c' + Date.now() + '-' + Math.floor(Math.random() * 1e6),  // 队列唯一标识：旧收集链检测到队列被替换即中止
             userUrl: userUrl,
             page: 1,
             seen: {},
@@ -1467,7 +1537,17 @@
     function continueAuthorCollect() {
         var q = loadQueue();
         if (!q || q.phase !== 'collect') return;
+        if (q.stopped) { clearQueue(); log('已取消作者列表收集', true); return; }
+        // 同队列已在收集 → 跳过；若 running 是别的 qid，说明队列已被新收集替换，
+        // 旧链会在 step() 的 qid 检测处自行中止，这里照常启动新链
+        if (collectRunning === q.qid) return;
+        collectRunning = q.qid;
         fetchAuthorVideos().then(function (items) {
+            if (collectRunning === q.qid) collectRunning = '';
+            var cur = loadQueue();
+            if (!cur) return;                      // 队列已被清除
+            if (cur.qid !== q.qid) return;         // 队列已被新收集/新任务替换：本链失效，静默退出，不碰新队列
+            if (queueStopFlag) { clearQueue(); log('已取消作者列表收集', true); return; }
             if (!items.length) { clearQueue(); toast('未找到该作者的公开视频'); return; }
             if (!confirm('该作者共 ' + items.length + ' 个视频，全部加入下载队列？')) {
                 clearQueue();
@@ -1475,6 +1555,7 @@
             }
             startBatch(items);
         }).catch(function (e) {
+            if (collectRunning === q.qid) collectRunning = '';
             log('✗ 获取作者视频失败: ' + e.message + '（进度已保留，刷新或打开任意页面会自动重试）', true);
             toast('获取作者视频失败，稍后自动重试');
         });
@@ -1531,7 +1612,8 @@
         if (!listId) { toast('未识别到系列 ID'); return; }
         // 构造翻页基 URL（保留 list 参数，去掉 page）
         var base = SITE + '/playlist?list=' + listId + '&sort=latest';
-        saveQueue({ phase: 'collectList', base: base, page: 1, seen: {}, items: [] });
+        queueStopFlag = false;
+        saveQueue({ phase: 'collectList', qid: 'l' + Date.now() + '-' + Math.floor(Math.random() * 1e6), base: base, page: 1, seen: {}, items: [] });
         continueListCollect();
     }
 
@@ -1539,11 +1621,19 @@
     function continueListCollect() {
         var q = loadQueue();
         if (!q || q.phase !== 'collectList') return;
+        if (q.stopped) { clearQueue(); log('已取消系列列表收集', true); return; }
+        if (collectRunning === q.qid) return;   // 同队列已在收集 → 跳过（新队列会由旧链 qid 检测放行）
+        var qid = q.qid;
+        collectRunning = q.qid;
         log('开始获取系列全部视频: ' + q.base);
         toast('正在获取系列视频列表…');
         function step() {
+            var cur = loadQueue();
+            if (queueStopFlag || !cur || cur.qid !== qid) return Promise.resolve([]);   // 用户停止/队列被替换：立即终止
             var url = q.base + '&page=' + q.page;
             return gmFetch(url).then(function (html) {
+                var cur2 = loadQueue();
+                if (queueStopFlag || !cur2 || cur2.qid !== qid) return [];   // 翻页间隙被停止/替换：丢弃本页
                 var doc = new DOMParser().parseFromString(html, 'text/html');
                 var videos = collectPageVideos(doc);
                 var fresh = 0;
@@ -1552,6 +1642,7 @@
                 });
                 saveQueue(q);
                 log('系列第 ' + q.page + ' 页: ' + videos.length + ' 个视频' + (fresh < videos.length ? '（无新增，停止）' : ''));
+                if (queueStopFlag || !loadQueue() || loadQueue().qid !== qid) return [];
                 if (fresh === 0 || videos.length === 0 || q.page >= MAX_AUTHOR_PAGES) return q.items;
                 q.page++;
                 var next = step();
@@ -1559,10 +1650,16 @@
             });
         }
         step().then(function (items) {
+            if (collectRunning === qid) collectRunning = '';
+            var cur = loadQueue();
+            if (!cur) return;                      // 队列已被清除
+            if (cur.qid !== qid) return;           // 队列已被新收集/新任务替换：本链失效，静默退出，不碰新队列
+            if (queueStopFlag) { clearQueue(); log('已取消系列列表收集', true); return; }
             if (!items.length) { clearQueue(); toast('该系列没有可下载的视频'); return; }
             if (!confirm('该系列共 ' + items.length + ' 个视频，全部加入下载队列？')) { clearQueue(); return; }
             startBatch(items);
         }).catch(function (e) {
+            if (collectRunning === qid) collectRunning = '';
             log('✗ 获取系列视频失败: ' + e.message + '（进度已保留，稍后自动重试）', true);
             toast('获取系列视频失败，稍后自动重试');
         });
@@ -1602,17 +1699,20 @@
             '.h1dl-btn-ghost{background:transparent;border:1px solid #666;color:#ccc;border-radius:6px;padding:7px 12px;font-size:13px;cursor:pointer;}',
             '.h1dl-btn-ghost:hover{border-color:#999;color:#fff;}',
 
-            '#h1dl-log{position:fixed;left:16px;bottom:16px;z-index:99998;width:420px;max-height:260px;background:rgba(15,15,22,.94);border:1px solid rgba(255,255,255,.15);border-radius:10px;overflow:hidden;font-size:12px;box-shadow:0 4px 20px rgba(0,0,0,.5);}',
+            '#h1dl-log{position:fixed;left:16px;bottom:16px;z-index:99998;width:480px;max-height:320px;background:rgba(15,15,22,.94);border:1px solid rgba(255,255,255,.15);border-radius:10px;overflow:hidden;font-size:12px;box-shadow:0 4px 20px rgba(0,0,0,.5);}',
             '#h1dl-log .h1dl-log-head{padding:6px 10px;color:#ff7b9c;font-weight:bold;display:flex;justify-content:space-between;align-items:center;background:rgba(255,255,255,.04);}',
             '#h1dl-log .h1dl-log-head b.h1dl-stat-ok{color:#7bffa0;}',
             '#h1dl-log .h1dl-log-head b.h1dl-stat-err{color:#ff7b7b;}',
             '#h1dl-log .h1dl-log-clear,#h1dl-log .h1dl-log-toggle{cursor:pointer;color:#888;font-weight:normal;}',
             '#h1dl-log .h1dl-log-stop{cursor:pointer;color:#ff9b7b;font-weight:normal;}',
             '#h1dl-log .h1dl-log-stop:hover{color:#ff7b5b;}',
+            '#h1dl-log .h1dl-log-clearq{cursor:pointer;color:#ffb84d;font-weight:normal;}',
+            '#h1dl-log .h1dl-log-clearq:hover{color:#ffd27a;}',
             '#h1dl-log .h1dl-log-zip{cursor:pointer;color:#7bffa0;font-weight:normal;}',
             '#h1dl-log .h1dl-log-zip:hover{color:#a0ffc0;}',
             '#h1dl-log .h1dl-log-clear:hover,#h1dl-log .h1dl-log-toggle:hover{color:#ccc;}',
-            '#h1dl-log .h1dl-log-body{max-height:200px;overflow-y:auto;padding:6px 10px;color:#888;line-height:1.6;}',
+            '#h1dl-log .h1dl-log-body{max-height:260px;overflow-y:auto;padding:6px 10px;color:#888;line-height:1.6;}',
+            '#h1dl-log .h1dl-log-line{word-break:break-all;}',
             '#h1dl-log .h1dl-log-line.h1dl-ok{color:#7bffa0;font-weight:bold;}',
             '#h1dl-log .h1dl-log-line.h1dl-err{color:#ff7b7b;}',
             '#h1dl-log.h1dl-collapsed .h1dl-log-body{display:none;}',
@@ -1656,6 +1756,7 @@
         });
         GM_registerMenuCommand('继续批量任务（恢复中断的队列）', resumeQueue);
         GM_registerMenuCommand('停止批量任务（保留进度）', stopQueue);
+        GM_registerMenuCommand('清空批量队列（删除全部进度）', clearQueueTask);
 
         // 跨页续传：页面加载时检测未完成的队列并自动恢复
         setTimeout(autoResume, 600);
