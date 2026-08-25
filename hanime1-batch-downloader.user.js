@@ -230,7 +230,11 @@
                     var body = null;
                     try { body = JSON.parse(res.responseText); } catch (e) { /* 非 JSON 响应 */ }
                     if (res.status >= 200 && res.status < 300) resolve({ status: res.status, body: body });
-                    else reject(new Error('MediaCenter HTTP ' + res.status + (body && body.error ? ' (' + body.error + ')' : '')));
+                    else {
+                        var err = new Error('MediaCenter HTTP ' + res.status + (body && body.error ? ' (' + body.error + ')' : ''));
+                        err.body = body;   // 附带响应体（如 409 的 existingId）
+                        reject(err);
+                    }
                 },
                 onerror: function () { reject(new Error('无法连接 MediaCenter: ' + url)); },
                 ontimeout: function () { reject(new Error('MediaCenter 请求超时: ' + url)); }
@@ -285,48 +289,62 @@
         });
     }
 
-    // 实验性：aria2 下载到服务器路径 → 下载完成后把本地路径 + 元数据登记到 MediaCenter
-    // 前提：aria2 与 MediaCenter 在同一台机器（或共享存储）；「保存目录」须为 MediaCenter 可访问的服务器路径。
-    // 流程：aria2.addUri → 轮询 complete → GET /media?filePath= 查重 → POST /media 登记 → PUT /media/:id 补全元数据
-    function downloadAndPushToMediaCenter(info, picked, target) {
-        var base = (cfg.mediaCenterBase || '').replace(/\/+$/, '');
-        if (!base) return Promise.reject(new Error('未配置 MediaCenter API 地址'));
-        var options = buildAria2Options(target);
-        if (!options.dir) return Promise.reject(new Error('MediaCenter 模式需要配置「保存目录」（aria2 下载到服务器路径）'));
-        var filePath = options.dir.replace(/\/+$/, '') + '/' + target.filename;
-        var payload = buildMcPayload(info, picked);
-        var sourceMeta = JSON.stringify(payload);
-
-        return aria2Rpc('aria2.addUri', ['token:' + cfg.aria2Secret, [picked.url], options])
-            .then(function (gid) {
-                log('⏳ aria2 开始下载: ' + target.display + '（gid=' + gid + '），完成后自动登记 MediaCenter');
-                return waitAria2Complete(gid);
-            })
-            .then(function (st) {
-                // aria2 完成时 totalLength = 文件字节数（JSON-RPC 返回字符串）
-                var fileSize = parseInt(st.totalLength, 10) || 0;
-                // 查重：已登记过相同服务器路径则跳过 POST，只更新元数据
-                return mcRequest(base + '/media?filePath=' + encodeURIComponent(filePath) + '&limit=1', { timeout: 20000 })
-                    .then(function (res) {
-                        var items = (res.body && res.body.items) || [];
-                        if (items.length) return { id: items[0].id, exists: true, fileSize: fileSize };
-                        return mcRequest(base + '/media', {
-                            method: 'POST',
-                            data: {
-                                filePath: filePath,
-                                mimeType: 'video/mp4',
-                                fileSize: fileSize,
-                                sourceMeta: sourceMeta
-                            },
-                            timeout: 60000      // 服务端会对本地文件做 ffprobe 探测
-                        }).then(function (r2) {
-                            var id = r2.body && r2.body.id;
-                            if (!id) throw new Error('MediaCenter 未返回媒体 id');
-                            return { id: id, exists: false, fileSize: fileSize };
-                        });
+    // aria2 下载（含自动重试）：addUri → 轮询 complete → 返回文件字节数
+    // - addUri 报「文件已存在/任务已存在」：文件已在磁盘，跳过下载（返回 skipped）
+    // - 下载 error/中止：默认重试 3 次（间隔 = 限速间隔或 5s），aria2 continue=true 会续传
+    function aria2DownloadWithRetry(picked, options, retries) {
+        retries = retries == null ? 3 : retries;
+        function attempt(n) {
+            return aria2Rpc('aria2.addUri', ['token:' + cfg.aria2Secret, [picked.url], options])
+                .then(function (gid) {
+                    log('⏳ aria2 开始下载: ' + (options.out || picked.url) + '（gid=' + gid + '），完成后自动登记 MediaCenter');
+                    return waitAria2Complete(gid).then(function (st) {
+                        return { fileSize: parseInt(st.totalLength, 10) || 0 };
                     });
+                })
+                .catch(function (e) {
+                    var msg = e.message || '';
+                    // 文件已存在（allow-overwrite=false）或任务已存在：跳过下载，直接登记
+                    if (/already exists|is being downloaded/i.test(msg)) {
+                        return { skipped: true, fileSize: 0 };
+                    }
+                    if (n > 0) {
+                        var waitSec = cfg.throttle ? cfg.throttleSec : 5;
+                        log('⚠ aria2 下载失败（' + msg + '），' + waitSec + 's 后第 ' + (retries - n + 1) + ' 次重试…', true);
+                        return delay(waitSec * 1000).then(function () { return attempt(n - 1); });
+                    }
+                    throw e;
+                });
+        }
+        return attempt(retries);
+    }
+
+    // 登记 MediaCenter：查重（filePath）→ POST（409 按哈希查重命中则用 existingId）→ PUT 补全元数据
+    function registerToMediaCenter(base, filePath, sourceMeta, info, fileSize) {
+        return mcRequest(base + '/media?filePath=' + encodeURIComponent(filePath) + '&limit=1', { timeout: 20000 })
+            .then(function (res) {
+                var items = (res.body && res.body.items) || [];
+                if (items.length) return { id: items[0].id, exists: true };
+                return mcRequest(base + '/media', {
+                    method: 'POST',
+                    data: {
+                        filePath: filePath,
+                        mimeType: 'video/mp4',
+                        fileSize: fileSize || 0,
+                        sourceMeta: sourceMeta
+                    },
+                    timeout: 180000      // 服务端 ffprobe + 自动计算大文件哈希，给足时间
+                }).then(function (r2) {
+                    var id = r2.body && r2.body.id;
+                    if (!id) throw new Error('MediaCenter 未返回媒体 id');
+                    return { id: id, exists: false };
+                });
             })
-            // 补全元数据（标题/简介/作者/标签/来源/原始日期）；tags 恒为数组，避免命中 media.noUpdate
+            .catch(function (e) {
+                // 409 media.duplicateFile：服务端按 fileHash 查重命中 → 用 existingId 继续更新
+                if (e.body && e.body.existingId) return { id: e.body.existingId, exists: true };
+                throw e;
+            })
             .then(function (r) {
                 var data = {
                     title: info.title || undefined,
@@ -347,6 +365,26 @@
                 }).then(function () {
                     return { id: r.id, title: info.title || '', exists: r.exists };
                 });
+            });
+    }
+
+    // 实验性：aria2 下载到服务器路径 → 下载完成后把本地路径 + 元数据登记到 MediaCenter
+    // 前提：aria2 与 MediaCenter 在同一台机器（或共享存储）；「保存目录」须为 MediaCenter 可访问的服务器路径。
+    function downloadAndPushToMediaCenter(info, picked, target) {
+        var base = (cfg.mediaCenterBase || '').replace(/\/+$/, '');
+        if (!base) return Promise.reject(new Error('未配置 MediaCenter API 地址'));
+        var options = buildAria2Options(target);
+        if (!options.dir) return Promise.reject(new Error('MediaCenter 模式需要配置「保存目录」（aria2 下载到服务器路径）'));
+        var filePath = options.dir.replace(/\/+$/, '') + '/' + target.filename;
+        var payload = buildMcPayload(info, picked);
+        var sourceMeta = JSON.stringify(payload);
+
+        return aria2DownloadWithRetry(picked, options)
+            .then(function (dl) {
+                if (dl.skipped) {
+                    log('ℹ aria2 检测到文件已存在，跳过下载，直接登记 MediaCenter: ' + target.display);
+                }
+                return registerToMediaCenter(base, filePath, sourceMeta, info, dl.fileSize);
             });
     }
 
