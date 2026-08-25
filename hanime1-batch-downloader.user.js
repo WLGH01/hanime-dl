@@ -269,31 +269,19 @@
         };
     }
 
-    // 推送 aria2 下载任务（不等待下载完成）：addUri 成功即视为推送完成
-    // - addUri 报「文件已存在/任务已存在」：跳过下载（返回 skipped）
-    // - addUri 网络失败：默认重试 3 次（间隔 = 限速间隔或 5s）
-    function aria2Push(picked, options, retries) {
-        retries = retries == null ? 3 : retries;
-        function attempt(n) {
-            return aria2Rpc('aria2.addUri', ['token:' + cfg.aria2Secret, [picked.url], options])
-                .then(function (gid) {
-                    return { gid: gid };
-                })
-                .catch(function (e) {
-                    var msg = e.message || '';
-                    // 文件已存在（allow-overwrite=false）或任务已存在：跳过下载
-                    if (/already exists|is being downloaded/i.test(msg)) {
-                        return { skipped: true };
-                    }
-                    if (n > 0) {
-                        var waitSec = cfg.throttle ? cfg.throttleSec : 5;
-                        log('⚠ aria2 推送失败（' + msg + '），' + waitSec + 's 后第 ' + (retries - n + 1) + ' 次重试…', true);
-                        return delay(waitSec * 1000).then(function () { return attempt(n - 1); });
-                    }
-                    throw e;
-                });
-        }
-        return attempt(retries);
+    // 推送 aria2 下载任务（不等待下载完成、不重试）：addUri 成功即视为推送完成，失败立即失败
+    // - addUri 报「文件已存在/任务已存在」：跳过下载（返回 skipped），仍登记
+    function aria2Push(picked, options) {
+        return aria2Rpc('aria2.addUri', ['token:' + cfg.aria2Secret, [picked.url], options])
+            .then(function (gid) {
+                return { gid: gid };
+            })
+            .catch(function (e) {
+                if (/already exists|is being downloaded/i.test(e.message || '')) {
+                    return { skipped: true };
+                }
+                throw e;
+            });
     }
 
     // 登记 MediaCenter：查重（filePath）→ POST（409 按哈希查重命中则用 existingId）→ PUT 补全元数据
