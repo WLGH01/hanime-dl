@@ -269,48 +269,25 @@
         };
     }
 
-    // 轮询 aria2 任务直到完成/失败（默认最长等 12 小时；页面被销毁后队列跨页续传兜底）
-    function waitAria2Complete(gid, timeoutMs) {
-        var deadline = Date.now() + (timeoutMs || 12 * 3600 * 1000);
-        return new Promise(function (resolve, reject) {
-            function poll() {
-                aria2Rpc('aria2.tellStatus', ['token:' + cfg.aria2Secret, gid]).then(function (st) {
-                    if (st.status === 'complete') resolve(st);
-                    else if (st.status === 'error' || st.status === 'removed') {
-                        reject(new Error('aria2 下载失败: ' + (st.errorMessage || st.status)));
-                    } else if (Date.now() > deadline) {
-                        reject(new Error('等待 aria2 下载超时（12h），可稍后「继续批量任务」自动重试'));
-                    } else {
-                        setTimeout(poll, 3000);
-                    }
-                }).catch(reject);
-            }
-            poll();
-        });
-    }
-
-    // aria2 下载（含自动重试）：addUri → 轮询 complete → 返回文件字节数
-    // - addUri 报「文件已存在/任务已存在」：文件已在磁盘，跳过下载（返回 skipped）
-    // - 下载 error/中止：默认重试 3 次（间隔 = 限速间隔或 5s），aria2 continue=true 会续传
-    function aria2DownloadWithRetry(picked, options, retries) {
+    // 推送 aria2 下载任务（不等待下载完成）：addUri 成功即视为推送完成
+    // - addUri 报「文件已存在/任务已存在」：跳过下载（返回 skipped）
+    // - addUri 网络失败：默认重试 3 次（间隔 = 限速间隔或 5s）
+    function aria2Push(picked, options, retries) {
         retries = retries == null ? 3 : retries;
         function attempt(n) {
             return aria2Rpc('aria2.addUri', ['token:' + cfg.aria2Secret, [picked.url], options])
                 .then(function (gid) {
-                    log('⏳ aria2 开始下载: ' + (options.out || picked.url) + '（gid=' + gid + '），完成后自动登记 MediaCenter');
-                    return waitAria2Complete(gid).then(function (st) {
-                        return { fileSize: parseInt(st.totalLength, 10) || 0 };
-                    });
+                    return { gid: gid };
                 })
                 .catch(function (e) {
                     var msg = e.message || '';
-                    // 文件已存在（allow-overwrite=false）或任务已存在：跳过下载，直接登记
+                    // 文件已存在（allow-overwrite=false）或任务已存在：跳过下载
                     if (/already exists|is being downloaded/i.test(msg)) {
-                        return { skipped: true, fileSize: 0 };
+                        return { skipped: true };
                     }
                     if (n > 0) {
                         var waitSec = cfg.throttle ? cfg.throttleSec : 5;
-                        log('⚠ aria2 下载失败（' + msg + '），' + waitSec + 's 后第 ' + (retries - n + 1) + ' 次重试…', true);
+                        log('⚠ aria2 推送失败（' + msg + '），' + waitSec + 's 后第 ' + (retries - n + 1) + ' 次重试…', true);
                         return delay(waitSec * 1000).then(function () { return attempt(n - 1); });
                     }
                     throw e;
@@ -368,8 +345,10 @@
             });
     }
 
-    // 实验性：aria2 下载到服务器路径 → 下载完成后把本地路径 + 元数据登记到 MediaCenter
+    // 实验性：推 aria2 下载任务（不等待完成）→ 立即把元数据登记到 MediaCenter
     // 前提：aria2 与 MediaCenter 在同一台机器（或共享存储）；「保存目录」须为 MediaCenter 可访问的服务器路径。
+    // 注意：文件未下载完成时登记，需 MediaCenter 端支持「文件暂不存在也建记录」（见配套补丁），
+    //       登记后由 MediaCenter 在文件就绪后回填 ffprobe/fileSize；fileSize 未知时传 0。
     function downloadAndPushToMediaCenter(info, picked, target) {
         var base = (cfg.mediaCenterBase || '').replace(/\/+$/, '');
         if (!base) return Promise.reject(new Error('未配置 MediaCenter API 地址'));
@@ -379,12 +358,14 @@
         var payload = buildMcPayload(info, picked);
         var sourceMeta = JSON.stringify(payload);
 
-        return aria2DownloadWithRetry(picked, options)
+        return aria2Push(picked, options)
             .then(function (dl) {
                 if (dl.skipped) {
-                    log('ℹ aria2 检测到文件已存在，跳过下载，直接登记 MediaCenter: ' + target.display);
+                    log('ℹ aria2 检测到文件已存在，跳过下载，仍登记 MediaCenter: ' + target.display);
+                } else {
+                    log('✓ 已推送 aria2 下载: ' + target.display + '（gid=' + dl.gid + '），无需等待完成，立即登记');
                 }
-                return registerToMediaCenter(base, filePath, sourceMeta, info, dl.fileSize);
+                return registerToMediaCenter(base, filePath, sourceMeta, info, 0);
             });
     }
 
@@ -782,7 +763,7 @@
         // 实验性：MediaCenter 登记模式 —— aria2 下载到服务器路径，完成后自动登记（配合 aria2 使用）
         if (cfg.mediaCenter) {
             return downloadAndPushToMediaCenter(info, picked, target).then(function (r) {
-                log('✓ 已下载并登记 MediaCenter: ' + (r.title || target.display) + ' (' + picked.quality + ', id=' + r.id + (r.exists ? '，记录已存在，仅更新元数据' : '') + ')', 'ok');
+                log('✓ 已推送 aria2 并登记 MediaCenter: ' + (r.title || target.display) + ' (' + picked.quality + ', id=' + r.id + (r.exists ? '，记录已存在，仅更新元数据' : '') + ')', 'ok');
                 statPushed();
                 return true;
             }).catch(function (e) {
