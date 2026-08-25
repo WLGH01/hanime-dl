@@ -88,6 +88,7 @@ The script injects the following UI elements on different pages:
 | Push throttling | Serial push with interval to avoid rate limiting (off by default) |
 | Task interval | Seconds between tasks when throttling |
 | Export metadata | Generate NFO + poster + banner (Beta) |
+| Show experimental features | Off by default: hides the whole MediaCenter push section and keeps the push disabled; turn it on to reveal and configure it |
 | Push to MediaCenter API (experimental) | While enabled, aria2/browser download is disabled; each video is pushed (download link + metadata) to the MediaCenter API instead |
 | MediaCenter API URL | Default `http://127.0.0.1:3000/api` |
 | API token | MediaCenter's `API_TOKEN` from `.env` (static service token); required for authentication |

@@ -49,6 +49,7 @@
         throttle: false,                                // 推送限速开关（关闭 = 不限速）
         throttleSec: 5,                                 // 限速时每个任务的间隔秒数
         exportMeta: true,                               // 导出封面 + Emby 兼容 NFO 元数据（作者/标签/点赞百分比）
+        showExperimental: false,                        // 显示实验性功能（MediaCenter API 推送）配置区块
         mediaCenter: false,                             // 实验性：推送到 MediaCenter API（开启后仅用此方式，替代 aria2/浏览器下载）
         mediaCenterBase: 'http://127.0.0.1:3000/api',   // MediaCenter API 基础地址
         mediaCenterToken: ''                            // MediaCenter .env 的 API_TOKEN（静态服务令牌）
@@ -1061,11 +1062,14 @@
             '  <div class="h1dl-hint">占位符：{title} 标题 · {author} 作者 · {id} 视频ID · {quality} 画质 · {date} 日期 · {index} 序号<br>用 <b>/</b> 分隔可自动创建子目录，如：{author} / {title} [{quality}]</div>',
             '  <label class="h1dl-row"><span class="h1dl-chk"><input type="checkbox" id="h1dl-meta"> 导出 NFO 与封面元数据（Beta）</span></label>',
             '  <div class="h1dl-hint">每个视频生成 <b>同名 .nfo</b>（标题/作者/标签/点赞/简介/日期）与 <b>-poster.jpg 封面</b>、<b>-banner.jpg 横幅</b>，统一打包进 zip，批量完成后自动下载，解压整目录拖入下载目录即可。</div>',
-            '  <div class="h1dl-exp">实验性：MediaCenter API 推送</div>',
-            '  <label class="h1dl-row"><span class="h1dl-chk"><input type="checkbox" id="h1dl-mc"> 推送到 MediaCenter API（开启后仅用此方式，aria2 / 浏览器下载不可用）</span></label>',
-            '  <label class="h1dl-row">MediaCenter API 地址<input id="h1dl-mc-base" placeholder="http://127.0.0.1:3000/api"></label>',
-            '  <label class="h1dl-row">API 令牌（MediaCenter 的 API_TOKEN）<input id="h1dl-mc-token" placeholder="静态服务令牌，留空无法通过鉴权"></label>',
-            '  <div class="h1dl-hint">开启后每个视频调用 <b>POST /media</b> 推送直链（filePath）+ 元数据（sourceMeta），再用 <b>PUT /media/:id</b> 补全标题/作者/标签/简介。<br>⚠ 需 MediaCenter 端支持远程 URL 入库（当前仓库版本仅支持服务器本地路径，见 README）。</div>',
+            '  <label class="h1dl-row"><span class="h1dl-chk"><input type="checkbox" id="h1dl-exp-show"> 显示实验性功能（MediaCenter API 推送，关掉即隐藏）</span></label>',
+            '  <div id="h1dl-exp-block">',
+            '    <div class="h1dl-exp">实验性：MediaCenter API 推送</div>',
+            '    <label class="h1dl-row"><span class="h1dl-chk"><input type="checkbox" id="h1dl-mc"> 推送到 MediaCenter API（开启后仅用此方式，aria2 / 浏览器下载不可用）</span></label>',
+            '    <label class="h1dl-row">MediaCenter API 地址<input id="h1dl-mc-base" placeholder="http://127.0.0.1:3000/api"></label>',
+            '    <label class="h1dl-row">API 令牌（MediaCenter 的 API_TOKEN）<input id="h1dl-mc-token" placeholder="静态服务令牌，留空无法通过鉴权"></label>',
+            '    <div class="h1dl-hint">开启后每个视频调用 <b>POST /media</b> 推送直链（filePath）+ 元数据（sourceMeta），再用 <b>PUT /media/:id</b> 补全标题/作者/标签/简介。<br>⚠ 需 MediaCenter 端支持远程 URL 入库（当前仓库版本仅支持服务器本地路径，见 README）。</div>',
+            '  </div>',
             '  <div class="h1dl-btns">',
             '    <button id="h1dl-test" class="h1dl-btn-ghost">测试 aria2 连接</button>',
             '    <span style="flex:1"></span>',
@@ -1086,9 +1090,19 @@
         overlay.querySelector('#h1dl-quality').value = cfg.quality;
         overlay.querySelector('#h1dl-tpl').value = cfg.renameTpl;
         overlay.querySelector('#h1dl-meta').checked = !!cfg.exportMeta;
+        overlay.querySelector('#h1dl-exp-show').checked = !!cfg.showExperimental;
         overlay.querySelector('#h1dl-mc').checked = !!cfg.mediaCenter;
         overlay.querySelector('#h1dl-mc-base').value = cfg.mediaCenterBase || DEFAULT_CONFIG.mediaCenterBase;
         overlay.querySelector('#h1dl-mc-token').value = cfg.mediaCenterToken || '';
+
+        // 实验性总开关：关闭 = 整块隐藏（保存时还会强制 mediaCenter=false）
+        function refreshExpState() {
+            var show = overlay.querySelector('#h1dl-exp-show').checked;
+            var block = overlay.querySelector('#h1dl-exp-block');
+            if (block) block.style.display = show ? '' : 'none';
+        }
+        overlay.querySelector('#h1dl-exp-show').addEventListener('change', refreshExpState);
+        refreshExpState();
 
         // 实验性开关联动：开启后禁用下载方式与 aria2 相关控件（仅用 MediaCenter 推送）
         function refreshMcState() {
@@ -1133,7 +1147,9 @@
             cfg.quality = overlay.querySelector('#h1dl-quality').value;
             cfg.renameTpl = overlay.querySelector('#h1dl-tpl').value.trim() || DEFAULT_CONFIG.renameTpl;
             cfg.exportMeta = overlay.querySelector('#h1dl-meta').checked;
-            cfg.mediaCenter = overlay.querySelector('#h1dl-mc').checked;
+            cfg.showExperimental = overlay.querySelector('#h1dl-exp-show').checked;
+            // 隐藏实验性区块时强制关闭 MediaCenter 推送，避免「看不见却仍在生效」
+            cfg.mediaCenter = overlay.querySelector('#h1dl-mc').checked && cfg.showExperimental;
             cfg.mediaCenterBase = overlay.querySelector('#h1dl-mc-base').value.trim() || DEFAULT_CONFIG.mediaCenterBase;
             cfg.mediaCenterToken = overlay.querySelector('#h1dl-mc-token').value.trim();
             saveCfg();
