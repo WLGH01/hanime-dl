@@ -243,7 +243,9 @@
         return mcRequest(base.replace(/\/+$/, '') + '/media?limit=1', { token: token });
     }
 
-    // 构造推送载荷：直链 + 完整元数据（JSON 写入 sourceMeta，同时拆字段走 PUT）
+    // 构造推送载荷：完整元数据（JSON 写入 sourceMeta，同时拆字段走 PUT）
+    // 注意：pageUrl 为 hanime1 网页来源链接（source 的来源）；downloadUrl 是直链，
+    //       secure 令牌会过期，仅供参考，不作为来源。来源一律以 source='hanime1' + pageUrl 为准。
     function buildMcPayload(info, picked) {
         return {
             source: 'hanime1',
@@ -300,39 +302,45 @@
                 log('⏳ aria2 开始下载: ' + target.display + '（gid=' + gid + '），完成后自动登记 MediaCenter');
                 return waitAria2Complete(gid);
             })
-            // 查重：已登记过相同服务器路径则跳过 POST，只更新元数据
-            .then(function () {
-                return mcRequest(base + '/media?filePath=' + encodeURIComponent(filePath) + '&limit=1', { timeout: 20000 });
+            .then(function (st) {
+                // aria2 完成时 totalLength = 文件字节数（JSON-RPC 返回字符串）
+                var fileSize = parseInt(st.totalLength, 10) || 0;
+                // 查重：已登记过相同服务器路径则跳过 POST，只更新元数据
+                return mcRequest(base + '/media?filePath=' + encodeURIComponent(filePath) + '&limit=1', { timeout: 20000 })
+                    .then(function (res) {
+                        var items = (res.body && res.body.items) || [];
+                        if (items.length) return { id: items[0].id, exists: true, fileSize: fileSize };
+                        return mcRequest(base + '/media', {
+                            method: 'POST',
+                            data: {
+                                filePath: filePath,
+                                mimeType: 'video/mp4',
+                                fileSize: fileSize,
+                                sourceMeta: sourceMeta
+                            },
+                            timeout: 60000      // 服务端会对本地文件做 ffprobe 探测
+                        }).then(function (r2) {
+                            var id = r2.body && r2.body.id;
+                            if (!id) throw new Error('MediaCenter 未返回媒体 id');
+                            return { id: id, exists: false, fileSize: fileSize };
+                        });
+                    });
             })
-            .then(function (res) {
-                var items = (res.body && res.body.items) || [];
-                if (items.length) return { id: items[0].id, exists: true };
-                return mcRequest(base + '/media', {
-                    method: 'POST',
-                    data: {
-                        filePath: filePath,
-                        mimeType: 'video/mp4',
-                        sourceMeta: sourceMeta
-                    },
-                    timeout: 60000      // 服务端会对本地文件做 ffprobe 探测
-                }).then(function (r2) {
-                    var id = r2.body && r2.body.id;
-                    if (!id) throw new Error('MediaCenter 未返回媒体 id');
-                    return { id: id, exists: false };
-                });
-            })
-            // 补全元数据（标题/简介/作者/标签/来源）；tags 恒为数组，避免命中 media.noUpdate
+            // 补全元数据（标题/简介/作者/标签/来源/原始日期）；tags 恒为数组，避免命中 media.noUpdate
             .then(function (r) {
+                var data = {
+                    title: info.title || undefined,
+                    description: info.plot || '',
+                    author: info.author || undefined,
+                    tags: info.tags || [],
+                    source: 'hanime1',
+                    sourceMeta: sourceMeta
+                };
+                // 发布日期作为媒体的原始 createdAt（管理员可写），如 2026-08-24 → 2026-08-24T00:00:00.000Z
+                if (info.date) data.createdAt = info.date + 'T00:00:00.000Z';
                 return mcRequest(base + '/media/' + r.id, {
                     method: 'PUT',
-                    data: {
-                        title: info.title || undefined,
-                        description: info.plot || '',
-                        author: info.author || undefined,
-                        tags: info.tags || [],
-                        source: 'hanime1',
-                        sourceMeta: sourceMeta
-                    }
+                    data: data
                 }).then(function () {
                     return { id: r.id, title: info.title || '', exists: r.exists };
                 });
