@@ -2,7 +2,7 @@
 
 ## [中文](./README.md) | English
 
-> A Tampermonkey userscript for batch downloading videos from [hanime1.me](https://hanime1.me/) (v1.4.3). Supports aria2 RPC, full author/series download, custom rename rules, cross-page resume, Kodi/Emby/Jellyfin/Plex-compatible NFO metadata export; experimental: auto-register downloaded videos (local path + metadata) to a self-hosted MediaCenter after aria2 finishes.
+> A Tampermonkey userscript for batch downloading videos from [hanime1.me](https://hanime1.me/) (v1.4.4). Supports aria2 RPC, full author/series download, custom rename rules, cross-page resume, Kodi/Emby/Jellyfin/Plex-compatible NFO metadata export; browser mode uses native browser downloads (page-attributed, live progress, correct filenames); experimental: auto-register downloaded videos (local path + metadata) to a self-hosted MediaCenter after aria2 finishes.
 
 **📦 One-click install:** [Install on Greasy Fork](https://greasyfork.org/zh-CN/scripts/592408-hanime1-me-%E6%89%B9%E9%87%8F%E4%B8%8B%E8%BD%BD%E5%B7%A5%E5%85%B7-batch-downloader)
 
@@ -20,7 +20,8 @@
 | Download current author | Auto-paginates the author's full uploads (not limited to the 60-item sidebar) |
 | Series download | Download an entire series from hentai/short-anime playlist pages |
 | aria2 RPC | Multi-connection, resume, secret auth, http/socks proxy, connection test |
-| Rename rules | Placeholders + `/` auto-creating sub-directories |
+| Native browser download | No aria2 needed: the script fetches the video and hands it to a **native browser download**; the download entry is attributed to the page (no longer "downloaded by extension"), the log panel shows live percentage progress, and filenames follow your rename rule (CJK text no longer garbled) |
+| Rename rules | Placeholders; `/` or `\` auto-creates sub-directories (aria2 mode only — browser mode produces a single-level filename) |
 | Cross-page resume | Progress persisted in real time; navigation doesn't interrupt |
 | Metadata export | Kodi-compatible NFO + vertical poster + horizontal banner, bundled as zip |
 | Push throttling | Serial push with interval to avoid rate limiting |
@@ -78,7 +79,7 @@ The script injects the following UI elements on different pages:
 
 | Setting | Description |
 |---|---|
-| Download mode | `aria2 RPC` (recommended) or `browser` (single-thread, no sub-directories) |
+| Download mode | `aria2 RPC` (recommended) or `browser` (single-thread). When browser mode is selected, the aria2 RPC URL/secret, save dir, proxy, and test button are hidden automatically; the rename rule stays editable (default `{title} [{quality}]`, no sub-directories), together with a note about browser-mode limits |
 | aria2 RPC URL | Default `http://127.0.0.1:6800/jsonrpc` |
 | RPC secret | Must match aria2's `--rpc-secret` (leave empty if none) |
 | Save dir | aria2 download root (empty = aria2 default) |
@@ -97,7 +98,12 @@ The script injects the following UI elements on different pages:
 
 ## Rename Rules
 
-Default template: `{author} - {title} [{quality}]`
+Default templates follow the download mode automatically (leave the field empty to keep following the default; it updates when you switch modes — once customized, your template stays fixed):
+
+| Download mode | Default template | Result |
+|---|---|---|
+| aria2 RPC | `{author}/{title} [{quality}]` | `D:\hanime\AuthorA\Title [1080p].mp4` (author sub-directory created automatically) |
+| Native browser | `{title} [{quality}]` | `Title [1080p].mp4` (the rename rule is still editable, but no sub-directories: `/` and `\` just produce a single-level filename) |
 
 **Placeholders:**
 
@@ -110,23 +116,26 @@ Default template: `{author} - {title} [{quality}]`
 | `{date}` | Publish date, e.g. 2026-08-21 |
 | `{index}` | Batch index (from 001) |
 
-A `/` in the template creates sub-directories, e.g.:
+A `/` or `\` in the template creates sub-directories (both Windows and Linux style), e.g.:
 
 ```
 {author} / {title} [{quality}]
+{author}\{title} [{quality}]
 ```
 
 → produces `D:\hanime\AuthorA\Title [1080p].mp4`
 
-- Only the `/` you **explicitly** write creates directories; `/` inside titles/author names is replaced with spaces
+- Only the `/` or `\` you **explicitly** write creates directories; separators inside titles/author names are replaced with spaces
 - Illegal filename characters `\/:*?"<>|` are replaced with spaces
 - Multi-level is supported, e.g. `{author}/{date}/{index} {title}`
+- Sub-directory joining follows the save-dir style: `D:\hanime` joins with `\`, `/downloads` joins with `/` (no mixed `D:\hanime/Author` paths)
+- **Browser mode cannot create sub-directories** (the browser download API strips path separators): template directories are flattened into the filename, e.g. `AuthorA - Title [1080p].mp4`; the metadata zip is flattened the same way
 
 ---
 
 ## Metadata Export (Beta)
 
-On by default. After a batch finishes, a **metadata zip** is downloaded automatically, containing for each video:
+Off by default (tick "Export NFO & cover metadata" in settings). When enabled, **downloading a single video** exports the metadata zip immediately; a **batch task** exports it when the queue ends. The zip contains for each video:
 
 | File | Content |
 |---|---|
@@ -134,7 +143,7 @@ On by default. After a batch finishes, a **metadata zip** is downloaded automati
 | `Title [1080p]-poster.jpg` | Vertical poster (`image/cover/{id}.jpg`) |
 | `Title [1080p]-banner.jpg` | Horizontal banner (`image/thumbnail/{id}h.jpg`) |
 
-The zip mirrors the **rename-rule directory structure** (e.g. `AuthorA/Title [1080p].nfo`), so unzip and drop the whole tree into your media library folder for automatic alignment. The log panel also has an "Export zip" button for manual export.
+The zip mirrors the **rename-rule directory structure** (e.g. `AuthorA/Title [1080p].nfo`), so unzip and drop the whole tree into your media library folder for automatic alignment; in browser mode the videos are saved flat, so the zip is flattened too (`AuthorA - Title [1080p].nfo`). The log panel also has an "Export zip" button for manual export.
 
 > NFO, poster, and banner are **all bundled into the zip** — not pushed separately to aria2 (avoiding duplicate downloads).
 
@@ -207,7 +216,9 @@ The script has been reviewed and has **no high-risk vulnerabilities**. Key safet
 ## FAQ
 
 - **aria2 connection failed**: ensure aria2c is running and the URL/secret are correct (default port 6800)
-- **No sub-directory**: `{author}/{title}` ≡ `{author} / {title}`; browser mode doesn't support sub-directories — use aria2
+- **No sub-directory**: `/` and `\` in the template both create directories (equivalent, joined in the save-dir style); browser mode cannot create directories and flattens them to "directory - filename" — use aria2 if you need a directory tree
+- **Browser download prompt / garbled names**: since v1.4.4 the script no longer uses the extension download API — it fetches the stream and lets the browser save it natively, so the download entry is page-attributed (no more "downloaded by extension"), the log panel shows live percentage progress, and filenames follow your rename rule (CJK text no longer garbled)
+- **Large files in browser mode**: the whole video is held in memory before being handed to the browser; for very large files (>1GB) prefer aria2 to avoid high memory use
 - **Pushes stopped after navigating**: the queue auto-resumes across pages; if manually stopped, resume via the Tampermonkey menu
 - **Worried about rate limiting**: enable push throttling with a 5–10s interval
 

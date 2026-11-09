@@ -3,7 +3,7 @@
 // @name:en      hanime1.me Batch Downloader
 // @name:zh-CN   hanime1.me 批量下载工具
 // @namespace    hanime1-batch-dl
-// @version      1.4.3
+// @version      1.4.4
 // @description  视频批量下载：本页批量勾选/全选、当前作者全部下载、系列(playlist)全部下载、下载当前视频；支持 aria2 RPC（http/socks 代理）、重命名规则按 / 自动建子目录、推送限速、右侧贴边工具栏；任务队列跨页续传；批量完成后自动打包导出 Emby 元数据 zip（NFO+封面+横幅，按重命名目录结构）；实验性：推送到 MediaCenter API（直链+元数据）
 // @description:en  Batch download videos from hanime1.me: batch check/select-all, download current author's full uploads, download entire series, download current video; aria2 RPC (http/socks proxy), rename rules with sub-directories, push throttling, cross-page resume, Emby NFO metadata zip export; experimental: push download links + metadata to MediaCenter API
 // @author       WorkBuddy
@@ -15,7 +15,6 @@
 // @grant        GM_getValue
 // @grant        GM_deleteValue
 // @grant        GM_registerMenuCommand
-// @grant        GM_download
 // @connect      hanime1.me
 // @connect      hanime1.com
 // @connect      vdownload.hembed.com
@@ -44,7 +43,7 @@
         aria2Dir: '',                                   // 留空 = aria2 默认目录
         proxy: '',                                      // 例: http://127.0.0.1:7890 或 socks5://127.0.0.1:1080（传给 aria2 的 all-proxy）
         quality: 'auto',                                // auto | 1080p | 720p | 480p
-        renameTpl: '{author} - {title} [{quality}]',    // 占位符: {title} {author} {id} {quality} {date} {index}；用 / 分隔可创建子目录
+        renameTpl: '',                                  // 留空 = 按下载方式取默认（aria2 带作者子目录，浏览器仅文件名）
         overwrite: true,                                // aria2 allow-overwrite
         throttle: false,                                // 推送限速开关（关闭 = 不限速）
         throttleSec: 5,                                 // 限速时每个任务的间隔秒数
@@ -55,12 +54,26 @@
         mediaCenterToken: ''                            // MediaCenter .env 的 API_TOKEN（静态服务令牌）
     };
 
+    // 重命名模板默认值：
+    //   aria2 支持子目录 → 默认建作者目录；
+    //   浏览器下载不支持子目录 → 默认仅文件名（模板仍可自定义，子目录会平铺）。
+    var RENAME_TPL_DEFAULT = {
+        aria2: '{author}/{title} [{quality}]',
+        browser: '{title} [{quality}]'
+    };
+    function defaultRenameTpl(mode) {
+        return RENAME_TPL_DEFAULT[mode || 'aria2'] || RENAME_TPL_DEFAULT.aria2;
+    }
+
     var cfg = loadCfg();
 
     function loadCfg() {
         try {
             var saved = GM_getValue('h1dl_cfg', null);
-            return Object.assign({}, DEFAULT_CONFIG, saved ? JSON.parse(saved) : {});
+            var merged = Object.assign({}, DEFAULT_CONFIG, saved ? JSON.parse(saved) : {});
+            // 旧版本默认模板 "{author} - {title} [{quality}]" 升级后不再作为默认，跟随下载方式取新默认
+            if (merged.renameTpl === '{author} - {title} [{quality}]') merged.renameTpl = '';
+            return merged;
         } catch (e) {
             return Object.assign({}, DEFAULT_CONFIG);
         }
@@ -91,8 +104,20 @@
             .slice(0, 150);
     }
 
+    // 拼接目录：按 base 的写法选择分隔符（Windows 反斜杠 / Linux 斜杠），
+    // 避免 "D:\hanime" + "/" + "作者" 这种混合写法导致 aria2 建目录失败。
+    function joinPath(base, sub) {
+        if (!base) return sub || '';
+        if (!sub) return String(base);
+        var sep = (/\\/.test(base) && !/\//.test(base)) ? '\\' : '/';
+        var b = String(base).replace(/[\/\\]+$/, '');
+        var s = String(sub).replace(/^[\/\\]+/, '').replace(/[\/\\]+/g, sep);
+        return b + sep + s;
+    }
+
     // 按重命名规则生成目标路径。
-    // 只有模板中显式写的 / 才创建子目录；标题/作者等字段值里自带的 / 会被净化为空格。
+    // 模板中显式写的 / 或 \ 都会创建子目录（Windows/Linux 写法都认）；
+    // 标题/作者等字段值里自带的 / 或 \ 会被净化为空格。
     // 例如 "{author} / {title} [{quality}]" → 目录"作者名"，文件"标题 [1080p].mp4"
     // 返回: { subDir: '作者名', filename: 'xx.mp4', display: '作者名/xx.mp4' }
     function buildFileTarget(info, index) {
@@ -105,7 +130,9 @@
             date: cleanSegment(info.date || '').trim(),
             index: index != null ? String(index + 1).padStart(3, '0') : ''
         };
-        var raw = cfg.renameTpl
+        // 浏览器模式默认仅文件名（子目录会平铺）；aria2 默认带作者子目录
+        var tpl = cfg.renameTpl || defaultRenameTpl(cfg.mode);
+        var raw = tpl
             .replace(/\{title\}/g, vals.title)
             .replace(/\{author\}/g, vals.author)
             .replace(/\{id\}/g, vals.id)
@@ -120,6 +147,18 @@
         if (!/\.mp4$/i.test(filename)) filename += '.mp4';
         var subDir = parts.join('/');
         return { subDir: subDir, filename: filename, display: (subDir ? subDir + '/' : '') + filename };
+    }
+
+    // 浏览器下载（<a download>）无法创建子目录：Chrome 会把文件名里的 / 过滤掉。
+    // 因此浏览器模式下把模板的子目录降级为文件名前缀："作者 / 标题" → "作者 - 标题.mp4"，
+    // 元数据 zip 也用同一扁平名字，保证 NFO/封面与视频同名同层。
+    function flattenTarget(target) {
+        if (!target.subDir) return target;
+        var base = target.subDir.replace(/[\/\\]+/g, ' - ') + ' - ' + target.filename.replace(/\.mp4$/i, '');
+        var flat = cleanSegment(base).replace(/[.\s]+$/, '');
+        if (!flat) flat = 'untitled';
+        flat += '.mp4';
+        return { subDir: '', filename: flat, display: flat };
     }
 
     function pad3(n) { return String(n).padStart(3, '0'); }
@@ -691,6 +730,102 @@
         });
     }
 
+    /* ================================================================
+     *  浏览器直接下载（GM_xmlhttpRequest 取流 + <a download> 保存）
+     *  目的：不再用 GM_download（会被 Chrome 标记「由以下扩展程序下载」、
+     *  文件名可能被服务端 Content-Disposition 或 URL 编码弄成乱码），
+     *  改为把二进制取回后用 <a download> 交给浏览器原生下载，文件名完全可控。
+     * ================================================================ */
+
+    var progressEl = null;
+
+    // 日志面板底部固定一行进度，原地刷新（避免每 700ms 刷一行）
+    function setProgressLine(text) {
+        ensureLogPanel();
+        if (!progressEl) {
+            progressEl = document.createElement('div');
+            progressEl.className = 'h1dl-log-line h1dl-prog';
+        }
+        if (progressEl.parentNode !== logBody) logBody.appendChild(progressEl);
+        progressEl.textContent = '[' + new Date().toTimeString().slice(0, 8) + '] ' + text;
+        logBody.scrollTop = logBody.scrollHeight;
+        while (logBody.children.length > 200) logBody.removeChild(logBody.firstChild);
+    }
+    function clearProgressLine() {
+        if (progressEl && progressEl.parentNode) progressEl.parentNode.removeChild(progressEl);
+        progressEl = null;
+    }
+    function formatBytes(n) {
+        n = Number(n) || 0;
+        if (n <= 0) return '0 B';
+        var units = ['B', 'KB', 'MB', 'GB', 'TB'], i = 0, v = n;
+        while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+        return (i === 0 ? v : v.toFixed(1)) + ' ' + units[i];
+    }
+
+    // 用 <a download> 保存 Blob：走浏览器原生下载（下载记录显示来源页面，文件名按 name 原样保存）
+    function saveBlobAsFile(blob, filename) {
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        // 浏览器接管大文件需要时间，延迟释放，避免下载被中途取消
+        setTimeout(function () { URL.revokeObjectURL(url); }, 120000);
+    }
+
+    // 浏览器直接下载：GM_xmlhttpRequest 取回二进制（onprogress 显示真实进度）→ <a download> 保存。
+    function browserDownload(picked, target) {
+        return new Promise(function (resolve) {
+            var lastTick = 0;
+            setProgressLine('⬇ 浏览器下载 ' + target.filename + ' — 连接中…');
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: picked.url,
+                headers: { 'Referer': SITE + '/', 'User-Agent': UA },
+                responseType: 'blob',
+                timeout: 0,          // 大视频不设超时
+                onprogress: function (p) {
+                    var now = Date.now();
+                    if (now - lastTick < 700) return;
+                    lastTick = now;
+                    var pct = p && p.total ? Math.round(p.loaded * 100 / p.total) : null;
+                    setProgressLine('⬇ ' + target.filename + ' — ' +
+                        (pct != null
+                            ? pct + '%（' + formatBytes(p.loaded) + ' / ' + formatBytes(p.total) + '）'
+                            : formatBytes(p && p.loaded)));
+                },
+                onload: function (res) {
+                    clearProgressLine();
+                    if (!res || res.status < 200 || res.status >= 400) {
+                        resolve({ ok: false, error: 'HTTP ' + (res ? res.status : '?') });
+                        return;
+                    }
+                    var blob = res.response;
+                    if (!(blob instanceof Blob)) {
+                        if (!blob) { resolve({ ok: false, error: '响应为空' }); return; }
+                        blob = new Blob([blob], { type: 'video/mp4' });
+                    }
+                    try {
+                        saveBlobAsFile(blob, target.filename);
+                        resolve({ ok: true, size: blob.size });
+                    } catch (e) {
+                        resolve({ ok: false, error: e.message || String(e) });
+                    }
+                },
+                onerror: function (e) {
+                    clearProgressLine();
+                    resolve({ ok: false, error: (e && e.error) || '网络错误' });
+                },
+                ontimeout: function () { clearProgressLine(); resolve({ ok: false, error: '下载超时' }); },
+                onabort: function () { clearProgressLine(); resolve({ ok: false, error: '已取消' }); }
+            });
+        });
+    }
+
     // 把单个视频的元数据（NFO + 封面 + 横幅）加入收集器；zip 路径按重命名规则的子目录
     function collectMetaForZip(info, target) {
         if (!cfg.exportMeta) return Promise.resolve();
@@ -758,11 +893,12 @@
                 'User-Agent: ' + UA
             ]
         };
-        // 重命名模板中的 / 会拼入保存目录（aria2 自动创建不存在的目录）
-        var dirParts = [];
-        if (cfg.aria2Dir) dirParts.push(cfg.aria2Dir.replace(/[\/\\]+$/, ''));
-        if (target.subDir) dirParts.push(target.subDir);
-        if (dirParts.length) options.dir = dirParts.join('/');
+        // 重命名模板中的 / 或 \ 会拼入保存目录（aria2 自动创建不存在的目录）。
+        // 拼接时跟随保存目录的写法：Windows 反斜杠路径用 \，Linux 用 /。
+        var dir = cfg.aria2Dir ? cfg.aria2Dir.replace(/[\/\\]+$/, '') : '';
+        if (dir && target.subDir) dir = joinPath(dir, target.subDir);
+        else if (!dir && target.subDir) dir = target.subDir;
+        if (dir) options.dir = dir;
         if (cfg.proxy) options['all-proxy'] = cfg.proxy;   // http:// 或 socks5:// 均支持
         return options;
     }
@@ -776,6 +912,16 @@
         }
         info.quality = picked.quality;
         var target = buildFileTarget(info, index);
+        // 浏览器模式不能创建子目录：模板里的目录降级成文件名前缀（NFO/封面 zip 同步扁平）
+        if (cfg.mode === 'browser') target = flattenTarget(target);
+
+        // 元数据（NFO + 封面 + 横幅）统一收集：批量模式等队列结束一次性导出 zip，
+        // 手动下载单个视频时立即导出（否则收集完永远没有下载入口）
+        function afterMeta() {
+            return collectMetaForZip(info, target).then(function () {
+                return index == null ? exportMetaZip() : null;
+            }).then(function () { return true; });
+        }
 
         // 实验性：MediaCenter 登记模式 —— aria2 下载到服务器路径，完成后自动登记（配合 aria2 使用）
         if (cfg.mediaCenter) {
@@ -796,38 +942,25 @@
             return aria2Rpc('aria2.addUri', ['token:' + cfg.aria2Secret, [picked.url], options]).then(function () {
                 log('✓ 已推送至 aria2: ' + target.display + ' (' + picked.quality + ')', 'ok');
                 statPushed();
-                // 元数据（NFO + 封面 + 横幅）统一收集进 zip，批量完成后一并导出；不再单独推 aria2
-                return collectMetaForZip(info, target).then(function () { return true; });
+                return afterMeta();
             }).catch(function (e) {
                 log('✗ 推送失败 ' + target.display + ' — ' + e.message, true);
                 statFailed();
                 return false;
             });
-        } else {
-            // 浏览器直接下载（GM_download 不支持子目录，仅用文件名）
-            if (target.subDir) log('⚠ 浏览器模式不支持子目录，将直接保存到下载目录: ' + target.filename);
-            return new Promise(function (resolve) {
-                GM_download({
-                    url: picked.url,
-                    name: target.filename,
-                    headers: { 'Referer': SITE + '/' },
-                    onload: function () {
-                        log('✓ 下载完成: ' + target.filename, 'ok');
-                        statPushed();
-                        // 浏览器模式：元数据统一收集进 zip（批量完成后一并导出），不逐个下载
-                        collectMetaForZip(info, target).then(function () {
-                            resolve(true);
-                        });
-                    },
-                    onerror: function (e) {
-                        log('✗ 浏览器下载失败(' + target.filename + '): ' + (e.error || '未知错误') + '，建议改用 aria2 模式', true);
-                        statFailed();
-                        resolve(false);
-                    },
-                    ontimeout: function () { log('✗ 下载超时: ' + target.filename, true); statFailed(); resolve(false); }
-                });
-            });
         }
+
+        // 浏览器直接下载：取二进制后由浏览器原生下载，文件名完全可控且带进度
+        return browserDownload(picked, target).then(function (r) {
+            if (!r.ok) {
+                log('✗ 浏览器下载失败(' + target.filename + '): ' + r.error + '，建议改用 aria2 模式', true);
+                statFailed();
+                return false;
+            }
+            log('✓ 下载完成: ' + target.filename + '（' + formatBytes(r.size) + '）', 'ok');
+            statPushed();
+            return afterMeta();
+        });
     }
 
     // 抓取单个视频信息并推送下载；返回 Promise<boolean>
@@ -916,6 +1049,11 @@
         var remaining = q.items.length - queueDoneCount(q);
         log('==== 批量任务' + (resumed ? '（跨页恢复，剩余 ' + remaining + ' 个）' : '开始，共 ' + q.items.length + ' 个视频') +
             (cfg.throttle ? '（限速: 任务间隔 ' + cfg.throttleSec + 's）' : '') + ' ====');
+        if (cfg.mode === 'browser') {
+            log('ℹ 浏览器模式：保存到浏览器默认下载目录，不支持子目录' +
+                (/[\/\\]/.test(cfg.renameTpl || '') ? '，模板里的目录会平铺成「目录 - 文件名」' : '') +
+                '；NFO/封面 zip 与视频同名同层');
+        }
         renderStats();
 
         // 认领第一个未完成且未被其他 worker 认领的任务，返回下标；-1 = 无
@@ -969,7 +1107,10 @@
             });
         }
 
-        var n = cfg.throttle ? 1 : Math.min(INFO_CONCURRENCY, remaining);
+        // 浏览器模式串行：GM_xmlhttpRequest 会把整个文件放内存，并发大文件容易爆内存；
+        // 单条进度行也才有意义。
+        var maxConcurrency = cfg.mode === 'browser' ? 1 : INFO_CONCURRENCY;
+        var n = cfg.throttle ? 1 : Math.min(maxConcurrency, remaining);
         var workers = [];
         for (var k = 0; k < n; k++) workers.push(worker());
         Promise.all(workers).then(function () {
@@ -1175,14 +1316,17 @@
             '  <h3>hanime1 批量下载 · 设置</h3>',
             '  <label class="h1dl-row">下载方式',
             '    <select id="h1dl-mode">',
-            '      <option value="aria2">aria2 RPC（推荐，支持代理/多线程）</option>',
-            '      <option value="browser">浏览器直接下载</option>',
+            '      <option value="aria2">aria2 RPC（推荐，支持代理/多线程/子目录）</option>',
+            '      <option value="browser">浏览器直接下载（无需 aria2，单线程）</option>',
             '    </select>',
             '  </label>',
-            '  <label class="h1dl-row">aria2 RPC 地址<input id="h1dl-rpc" placeholder="http://127.0.0.1:6800/jsonrpc"></label>',
-            '  <label class="h1dl-row">aria2 RPC 密钥<input type="password" id="h1dl-secret" placeholder="留空表示无密钥"></label>',
-            '  <label class="h1dl-row">保存目录<input id="h1dl-dir" placeholder="留空 = aria2 默认目录，如 D:\\hanime"></label>',
-            '  <label class="h1dl-row">代理（传给 aria2）<input id="h1dl-proxy" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"></label>',
+            '  <div id="h1dl-aria2-block">',
+            '    <label class="h1dl-row">aria2 RPC 地址<input id="h1dl-rpc" placeholder="http://127.0.0.1:6800/jsonrpc"></label>',
+            '    <label class="h1dl-row">aria2 RPC 密钥<input type="password" id="h1dl-secret" placeholder="留空表示无密钥"></label>',
+            '    <label class="h1dl-row">保存目录<input id="h1dl-dir" placeholder="留空 = aria2 默认目录，如 D:\\hanime"></label>',
+            '    <label class="h1dl-row">代理（传给 aria2）<input id="h1dl-proxy" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"></label>',
+            '  </div>',
+            '  <div id="h1dl-browser-hint" class="h1dl-hint" style="display:none">浏览器模式：文件保存到<b>浏览器默认下载目录</b>，不支持子目录（重命名规则里的 / 与 \\ 也只会生成单层文件名，重命名规则照常生效）；NFO/封面 zip 与视频同名同层。需要目录结构请切回 aria2 模式。</div>',
             '  <label class="h1dl-row"><span class="h1dl-chk"><input type="checkbox" id="h1dl-throttle"> 推送限速（任务逐个串行推送并等待间隔，防止请求过快被站点限制）</span></label>',
             '  <label class="h1dl-row">任务间隔（秒）<input type="number" id="h1dl-throttle-sec" min="1" step="1" placeholder="5"></label>',
             '  <label class="h1dl-row">优先画质',
@@ -1193,8 +1337,10 @@
             '      <option value="480p">480p</option>',
             '    </select>',
             '  </label>',
-            '  <label class="h1dl-row">重命名规则<input id="h1dl-tpl"></label>',
-            '  <div class="h1dl-hint">占位符：{title} 标题 · {author} 作者 · {id} 视频ID · {quality} 画质 · {date} 日期 · {index} 序号<br>用 <b>/</b> 分隔可自动创建子目录，如：{author} / {title} [{quality}]</div>',
+            '  <div id="h1dl-tpl-block">',
+            '    <label class="h1dl-row">重命名规则<input id="h1dl-tpl"></label>',
+            '    <div class="h1dl-hint">默认随下载方式：aria2 为 <b>{author}/{title} [{quality}]</b>（自动建作者子目录），浏览器为 <b>{title} [{quality}]</b>（仅单层文件名）。留空即用默认。<br>占位符：{title} 标题 · {author} 作者 · {id} 视频ID · {quality} 画质 · {date} 日期 · {index} 序号；用 <b>/</b> 或 <b>\\</b> 分隔可自动创建子目录（仅 aria2 模式；浏览器模式写分隔符也只生成单层文件名）</div>',
+            '  </div>',
             '  <label class="h1dl-row"><span class="h1dl-chk"><input type="checkbox" id="h1dl-meta"> 导出 NFO 与封面元数据（Beta）</span></label>',
             '  <div class="h1dl-hint">每个视频生成 <b>同名 .nfo</b>（标题/作者/标签/点赞/简介/日期）与 <b>-poster.jpg 封面</b>、<b>-banner.jpg 横幅</b>，统一打包进 zip，批量完成后自动下载，解压整目录拖入下载目录即可。</div>',
             '  <label class="h1dl-row"><span class="h1dl-chk"><input type="checkbox" id="h1dl-exp-show"> 显示实验性功能</span></label>',
@@ -1224,7 +1370,8 @@
         overlay.querySelector('#h1dl-throttle').checked = !!cfg.throttle;
         overlay.querySelector('#h1dl-throttle-sec').value = cfg.throttleSec || 5;
         overlay.querySelector('#h1dl-quality').value = cfg.quality;
-        overlay.querySelector('#h1dl-tpl').value = cfg.renameTpl;
+        overlay.querySelector('#h1dl-tpl').value = cfg.renameTpl || defaultRenameTpl(cfg.mode);
+        overlay.querySelector('#h1dl-tpl').placeholder = defaultRenameTpl(cfg.mode);
         overlay.querySelector('#h1dl-meta').checked = !!cfg.exportMeta;
         overlay.querySelector('#h1dl-exp-show').checked = !!cfg.showExperimental;
         overlay.querySelector('#h1dl-mc').checked = !!cfg.mediaCenter;
@@ -1239,6 +1386,30 @@
         }
         overlay.querySelector('#h1dl-exp-show').addEventListener('change', refreshExpState);
         refreshExpState();
+
+        // 下载方式联动：浏览器模式与 aria2 无关的参数（RPC 地址/密钥、保存目录、代理、测试按钮）整体隐藏，
+        // 并显示浏览器模式的目录/命名限制说明；重命名规则保留可改，但默认值与子目录行为随模式变化。
+        var lastMode = overlay.querySelector('#h1dl-mode').value;   // 用于判断模板是否还是上一模式的默认值
+        function refreshModeState() {
+            var mode = overlay.querySelector('#h1dl-mode').value;
+            var browser = mode === 'browser';
+            var aria2Block = overlay.querySelector('#h1dl-aria2-block');
+            if (aria2Block) aria2Block.style.display = browser ? 'none' : '';
+            var browserHint = overlay.querySelector('#h1dl-browser-hint');
+            if (browserHint) browserHint.style.display = browser ? '' : 'none';
+            var testBtn = overlay.querySelector('#h1dl-test');
+            if (testBtn) testBtn.style.display = browser ? 'none' : '';
+            // 重命名规则默认值随下载方式切换：仅在用户没自定义（空，或仍是上一模式默认）时替换
+            var tpl = overlay.querySelector('#h1dl-tpl');
+            if (tpl) {
+                tpl.placeholder = defaultRenameTpl(mode);
+                var cur = tpl.value.trim();
+                if (!cur || cur === defaultRenameTpl(lastMode)) tpl.value = defaultRenameTpl(mode);
+            }
+            lastMode = mode;
+        }
+        overlay.querySelector('#h1dl-mode').addEventListener('change', refreshModeState);
+        refreshModeState();
 
         // 实验性模式下 aria2 控件保持可用（下载要靠 aria2），测试按钮各自独立：
         // 「测试 aria2 连接」始终测 aria2，「测试 MediaCenter 连接」测 MediaCenter
@@ -1272,7 +1443,9 @@
             cfg.throttle = overlay.querySelector('#h1dl-throttle').checked;
             cfg.throttleSec = Math.max(1, parseInt(overlay.querySelector('#h1dl-throttle-sec').value, 10) || 5);
             cfg.quality = overlay.querySelector('#h1dl-quality').value;
-            cfg.renameTpl = overlay.querySelector('#h1dl-tpl').value.trim() || DEFAULT_CONFIG.renameTpl;
+            var tplVal = overlay.querySelector('#h1dl-tpl').value.trim();
+            // 与当前模式默认值一致时存空：以后切换下载方式，模板仍自动跟随默认
+            cfg.renameTpl = (tplVal && tplVal !== defaultRenameTpl(cfg.mode)) ? tplVal : '';
             cfg.exportMeta = overlay.querySelector('#h1dl-meta').checked;
             cfg.showExperimental = overlay.querySelector('#h1dl-exp-show').checked;
             // 隐藏实验性区块时强制关闭 MediaCenter 登记，避免「看不见却仍在生效」
@@ -1713,6 +1886,7 @@
             '#h1dl-log .h1dl-log-clear:hover,#h1dl-log .h1dl-log-toggle:hover{color:#ccc;}',
             '#h1dl-log .h1dl-log-body{max-height:260px;overflow-y:auto;padding:6px 10px;color:#888;line-height:1.6;}',
             '#h1dl-log .h1dl-log-line{word-break:break-all;}',
+            '#h1dl-log .h1dl-log-line.h1dl-prog{color:#ffd27a;}',
             '#h1dl-log .h1dl-log-line.h1dl-ok{color:#7bffa0;font-weight:bold;}',
             '#h1dl-log .h1dl-log-line.h1dl-err{color:#ff7b7b;}',
             '#h1dl-log.h1dl-collapsed .h1dl-log-body{display:none;}',
