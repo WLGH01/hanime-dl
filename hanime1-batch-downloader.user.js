@@ -3,7 +3,7 @@
 // @name:en      hanime1.me Batch Downloader
 // @name:zh-CN   hanime1.me 批量下载工具
 // @namespace    hanime1-batch-dl
-// @version      1.4.4
+// @version      1.4.5
 // @description  视频批量下载：本页批量勾选/全选、当前作者全部下载、系列(playlist)全部下载、下载当前视频；支持 aria2 RPC（http/socks 代理）、重命名规则按 / 自动建子目录、推送限速、右侧贴边工具栏；任务队列跨页续传；批量完成后自动打包导出 Emby 元数据 zip（NFO+封面+横幅，按重命名目录结构）；实验性：推送到 MediaCenter API（直链+元数据）
 // @description:en  Batch download videos from hanime1.me: batch check/select-all, download current author's full uploads, download entire series, download current video; aria2 RPC (http/socks proxy), rename rules with sub-directories, push throttling, cross-page resume, Emby NFO metadata zip export; experimental: push download links + metadata to MediaCenter API
 // @author       WorkBuddy
@@ -916,10 +916,12 @@
         if (cfg.mode === 'browser') target = flattenTarget(target);
 
         // 元数据（NFO + 封面 + 横幅）统一收集：批量模式等队列结束一次性导出 zip，
-        // 手动下载单个视频时立即导出（否则收集完永远没有下载入口）
+        // 手动下载单个视频时立即导出（否则收集完永远没有下载入口）。
+        // 关闭「导出元数据」时直接跳过——否则收集器为空，手动下载会误报「暂无已收集的元数据」
         function afterMeta() {
+            if (!cfg.exportMeta) return Promise.resolve(true);
             return collectMetaForZip(info, target).then(function () {
-                return index == null ? exportMetaZip() : null;
+                return (index == null && metaCollector.count() > 0) ? exportMetaZip() : null;
             }).then(function () { return true; });
         }
 
@@ -1583,6 +1585,18 @@
             startBatch(items);
         });
         toolbar.querySelector('#h1dl-tb-cfg').addEventListener('click', openSettings);
+
+        // 手机/触屏没有鼠标悬停：点击竖条切换面板显隐；点面板里的按钮或点空白处自动收起
+        toolbar.querySelector('.h1dl-rail-handle').addEventListener('click', function (e) {
+            e.stopPropagation();
+            toolbar.classList.toggle('h1dl-open');
+        });
+        toolbar.querySelectorAll('button').forEach(function (b) {
+            b.addEventListener('click', function () { toolbar.classList.remove('h1dl-open'); });
+        });
+        document.addEventListener('click', function (e) {
+            if (toolbar && !toolbar.contains(e.target)) toolbar.classList.remove('h1dl-open');
+        });
     }
 
     function updateToolbarCount() {
@@ -1851,7 +1865,7 @@
             '#h1dl-rail .h1dl-rail-badge{position:absolute;top:-11px;left:50%;transform:translateX(-50%);background:#fff;color:#e04a6f;font-size:13px;font-weight:bold;min-width:22px;height:22px;line-height:22px;text-align:center;border-radius:11px;padding:0 5px;display:none;box-shadow:0 1px 5px rgba(0,0,0,.45);}',
             '#h1dl-rail .h1dl-rail-badge:not(:empty){display:block;}',
             '#h1dl-rail .h1dl-rail-panel{position:absolute;right:42px;top:50%;transform:translateY(-50%) translateX(12px);opacity:0;visibility:hidden;transition:transform .22s ease,opacity .22s ease,visibility .22s;display:flex;flex-direction:column;gap:7px;background:rgba(20,20,28,.95);border:1px solid rgba(255,255,255,.15);border-radius:12px;padding:12px;width:180px;box-sizing:border-box;box-shadow:0 4px 22px rgba(0,0,0,.55);backdrop-filter:blur(6px);}',
-            '#h1dl-rail:hover .h1dl-rail-panel{transform:translateY(-50%) translateX(0);opacity:1;visibility:visible;}',
+            '#h1dl-rail:hover .h1dl-rail-panel,#h1dl-rail.h1dl-open .h1dl-rail-panel{transform:translateY(-50%) translateX(0);opacity:1;visibility:visible;}',
             '#h1dl-rail .h1dl-rail-title{color:#ff7b9c;font-size:13px;font-weight:bold;text-align:center;margin-bottom:2px;}',
             '#h1dl-rail button{width:100%;background:#333;border:1px solid #555;color:#eee;border-radius:7px;padding:8px 10px;font-size:13px;cursor:pointer;white-space:nowrap;}',
             '#h1dl-rail button:hover{background:#444;}',
@@ -1872,7 +1886,7 @@
             '.h1dl-btn-ghost{background:transparent;border:1px solid #666;color:#ccc;border-radius:6px;padding:7px 12px;font-size:13px;cursor:pointer;}',
             '.h1dl-btn-ghost:hover{border-color:#999;color:#fff;}',
 
-            '#h1dl-log{position:fixed;left:16px;bottom:16px;z-index:99998;width:480px;max-height:320px;background:rgba(15,15,22,.94);border:1px solid rgba(255,255,255,.15);border-radius:10px;overflow:hidden;font-size:12px;box-shadow:0 4px 20px rgba(0,0,0,.5);}',
+            '#h1dl-log{position:fixed;left:16px;bottom:16px;z-index:99998;width:480px;max-width:calc(100vw - 32px);max-height:320px;background:rgba(15,15,22,.94);border:1px solid rgba(255,255,255,.15);border-radius:10px;overflow:hidden;font-size:12px;box-shadow:0 4px 20px rgba(0,0,0,.5);}',
             '#h1dl-log .h1dl-log-head{padding:6px 10px;color:#ff7b9c;font-weight:bold;display:flex;justify-content:space-between;align-items:center;background:rgba(255,255,255,.04);}',
             '#h1dl-log .h1dl-log-head b.h1dl-stat-ok{color:#7bffa0;}',
             '#h1dl-log .h1dl-log-head b.h1dl-stat-err{color:#ff7b7b;}',

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hanime1 播放页（手机视口测试）</title>
+<meta property="og:image" content="https://hanime1.me/image/1001h.jpg">
+<script>
+  window.__rpcCalls = [];
+  window.__toasts = [];
+  window.GM_getValue = function () { return null; };
+  window.GM_setValue = function () {};
+  window.GM_deleteValue = function () {};
+  window.GM_registerMenuCommand = function () {};
+  window.GM_xmlhttpRequest = function (o) {
+    setTimeout(function () {
+      if (/jsonrpc/.test(o.url)) {
+        window.__rpcCalls.push(JSON.parse(o.data));
+        if (o.onload) o.onload({ status: 200, responseText: JSON.stringify({ jsonrpc: '2.0', id: 'x', result: 'fake-gid-1' }) });
+      } else if (o.onload) {
+        o.onload({ status: 200, responseText: '<html></html>', response: null });
+      }
+    }, 0);
+  };
+</script>
+<style>body{margin:0;background:#111;color:#ddd;font-family:sans-serif;padding:12px}</style>
+</head>
+<body>
+  <h3 id="shareBtn-title">测试视频 第1話</h3>
+  <div id="video-artist-name">测试作者</div>
+  <video controls>
+    <source src="https://vdownload.hembed.com/1001-1080p.mp4?secure=aaa" type="video/mp4">
+    <source src="https://vdownload.hembed.com/1001-720p.mp4?secure=bbb" type="video/mp4">
+  </video>
+  <div class="video-details-wrapper hidden-sm">觀看次數：12,345 2026-08-01</div>
+  <script>
+    // 观察 toast 文本，供断言使用
+    new MutationObserver(function (ms) {
+      ms.forEach(function (m) {
+        m.addedNodes.forEach(function (n) {
+          if (n.classList && n.classList.contains('h1dl-toast')) window.__toasts.push(n.textContent);
+        });
+      });
+    }).observe(document.body, { childList: true, subtree: true });
+  </script>
+  <script src="/hanime1-batch-downloader.user.js"></script>
+</body>
+</html>
