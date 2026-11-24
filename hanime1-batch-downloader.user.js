@@ -3,7 +3,7 @@
 // @name:en      hanime1.me Batch Downloader
 // @name:zh-CN   hanime1.me 批量下载工具
 // @namespace    hanime1-batch-dl
-// @version      1.4.5
+// @version      1.4.6
 // @description  视频批量下载：本页批量勾选/全选、当前作者全部下载、系列(playlist)全部下载、下载当前视频；支持 aria2 RPC（http/socks 代理）、重命名规则按 / 自动建子目录、推送限速、右侧贴边工具栏；任务队列跨页续传；批量完成后自动打包导出 Emby 元数据 zip（NFO+封面+横幅，按重命名目录结构）；实验性：推送到 MediaCenter API（直链+元数据）
 // @description:en  Batch download videos from hanime1.me: batch check/select-all, download current author's full uploads, download entire series, download current video; aria2 RPC (http/socks proxy), rename rules with sub-directories, push throttling, cross-page resume, Emby NFO metadata zip export; experimental: push download links + metadata to MediaCenter API
 // @author       WorkBuddy
@@ -188,7 +188,30 @@
 
     /* ================================================================
      *  网络请求（GM_xmlhttpRequest 包装）
+     *
+     *  注意：站点（Cloudflare）是按「每个请求的特征 + 出口 IP」逐次判定的，
+     *  不是「这个 URL 能不能访问」。实测同一页面：浏览器 UA → 200，
+     *  空 UA / curl UA → 403「Sorry, you have been blocked」。
+     *  批量下载要用 GM 身份额外抓 HTML，所以会出现「单集能下、批量全红」；
+     *  单集下载不抓页面（标题/视频源直接取 DOM），自然不受影响。
+     *  这里区分「被风控拦截」和「真·网络故障」，让报错本身带上原因。
      * ================================================================ */
+
+    // Cloudflare 拦截页 / JS 挑战页特征
+    function looksLikeCfBlock(status, body) {
+        var s = String(body || '').slice(0, 6000).toLowerCase();
+        if (s) {
+            return s.indexOf('attention required') > -1 ||
+                s.indexOf('cf-error-details') > -1 ||
+                s.indexOf('cf-browser-verification') > -1 ||
+                s.indexOf('_cf_chl_opt') > -1 ||
+                s.indexOf('just a moment') > -1 ||
+                s.indexOf('sorry, you have been blocked') > -1 ||
+                s.indexOf('cf-wrapper') > -1;
+        }
+        // 无响应体时按状态码保守判断
+        return status === 403 || status === 429 || status === 503;
+    }
 
     function gmFetch(url) {
         return new Promise(function (resolve, reject) {
@@ -201,8 +224,17 @@
                 },
                 timeout: 30000,
                 onload: function (res) {
-                    if (res.status >= 200 && res.status < 400) resolve(res.responseText);
-                    else reject(new Error('HTTP ' + res.status + ' ' + url));
+                    var body = res.responseText || '';
+                    var httpOk = res.status >= 200 && res.status < 400;
+                    var blocked = looksLikeCfBlock(res.status, body);
+                    if (httpOk && !blocked) { resolve(body); return; }
+                    var msg = 'HTTP ' + res.status + ' ' + url;
+                    if (blocked) msg += '（站点风控拦截：IP 被判定异常，换网络或稍后重试）';
+                    var err = new Error(msg);
+                    err.status = res.status;
+                    err.blocked = blocked;
+                    err.url = url;
+                    reject(err);
                 },
                 onerror: function (e) { reject(new Error('网络错误: ' + (e && e.error || url))); },
                 ontimeout: function () { reject(new Error('超时: ' + url)); }

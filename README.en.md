@@ -2,7 +2,7 @@
 
 ## [中文](./README.md) | English
 
-> A Tampermonkey userscript for batch downloading videos from [hanime1.me](https://hanime1.me/) (v1.4.5). Supports aria2 RPC, full author/series download, custom rename rules, cross-page resume, Kodi/Emby/Jellyfin/Plex-compatible NFO metadata export; browser mode uses native browser downloads (page-attributed, live progress, correct filenames); experimental: auto-register downloaded videos (local path + metadata) to a self-hosted MediaCenter after aria2 finishes.
+> A Tampermonkey userscript for batch downloading videos from [hanime1.me](https://hanime1.me/) (v1.4.6). Supports aria2 RPC, full author/series download, custom rename rules, cross-page resume, Kodi/Emby/Jellyfin/Plex-compatible NFO metadata export; browser mode uses native browser downloads (page-attributed, live progress, correct filenames); experimental: auto-register downloaded videos (local path + metadata) to a self-hosted MediaCenter after aria2 finishes.
 
 **📦 One-click install:** [Install on Greasy Fork](https://greasyfork.org/zh-CN/scripts/592408-hanime1-me-%E6%89%B9%E9%87%8F%E4%B8%8B%E8%BD%BD%E5%B7%A5%E5%85%B7-batch-downloader)
 
@@ -220,6 +220,7 @@ The script has been reviewed and has **no high-risk vulnerabilities**. Key safet
 - **Browser download prompt / garbled names**: since v1.4.4 the script no longer uses the extension download API — it fetches the stream and lets the browser save it natively, so the download entry is page-attributed (no more "downloaded by extension"), the log panel shows live percentage progress, and filenames follow your rename rule (CJK text no longer garbled)
 - **Large files in browser mode**: the whole video is held in memory before being handed to the browser; for very large files (>1GB) prefer aria2 to avoid high memory use
 - **Pushes stopped after navigating**: the queue auto-resumes across pages; if manually stopped, resume via the Tampermonkey menu
+- **Batch download fails with ✗ "failed to fetch info / failed to fetch author videos", but "Download current video" works**: the site's bot protection (Cloudflare) is blocking the extra page fetches the script needs for batch mode — it is not an aria2 or network-config problem, since single-video download only reads the current page. Since v1.4.6 the error message states this directly ("Cloudflare bot protection: IP flagged"). Fix: switch network/VPN node, enable push throttling (5–10s), retry later
 - **Worried about rate limiting**: enable push throttling with a 5–10s interval
 
 ---
